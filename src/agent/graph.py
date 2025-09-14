@@ -1,8 +1,8 @@
-"""LangGraph supervisor-based chat agent.
+"""LangGraph supervisor-based multi-agent system.
 
-Uses the langgraph-supervisor library for a simple conversational AI agent
-that can chat naturally with users. Designed to be easily extensible with
-additional workers in the future.
+Implements the official agent supervisor pattern from LangGraph tutorial
+with research and math agents to test infinite loop fix.
+Reference: https://langchain-ai.github.io/langgraph/tutorials/multi_agent/agent_supervisor/
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any, Dict, TypedDict
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
+from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langgraph_supervisor import create_supervisor
 
@@ -30,59 +31,80 @@ class Context(TypedDict):
     temperature: float
 
 
-def create_chat_agent():
-    """Create a simple conversational agent using ReAct pattern."""
-    # TODO(human): Simplify by passing model string directly to create_react_agent
-    # The create_react_agent can accept model strings and handle initialization internally
+# Define tools for the agents
+@tool
+def web_search(query: str) -> str:
+    """Search the web for information."""
+    # Mock implementation for testing
+    return f"Here are the search results for '{query}': Mock research data about {query}. This would normally return real web search results."
 
-    # Initialize the language model using init_chat_model
-    llm = init_chat_model(
-        "openai:gpt-4o-mini",
-        temperature=0.7
-    )
 
-    # Create a simple chat agent with no tools for now
-    chat_agent = create_react_agent(
-        model=llm,
-        tools=[],  # No tools for simple chat - can be extended later
+@tool
+def add(a: float, b: float) -> float:
+    """Add two numbers."""
+    return a + b
+
+
+@tool
+def multiply(a: float, b: float) -> float:
+    """Multiply two numbers."""
+    return a * b
+
+
+def create_research_agent():
+    """Create a research agent specialized in web search and information gathering."""
+    research_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
+        tools=[web_search],
         prompt=(
-            "You are a helpful AI assistant. Have natural conversations with users. "
-            "Be friendly, informative, and engaging. Respond thoughtfully to questions "
-            "and provide helpful information when requested."
+            "You are a research specialist. Your role is to search for information "
+            "and provide comprehensive answers based on your findings. "
+            "Use the web_search tool to gather relevant information when needed. "
+            "Be thorough and accurate in your research."
         ),
-        name="chat_assistant"
+        name="research_agent"
     )
+    return research_agent
 
-    return chat_agent
 
-
-def create_chat_supervisor():
-    """Create a supervisor to manage the chat agent."""
-    # Initialize the language model for the supervisor using init_chat_model
-    supervisor_llm = init_chat_model(
-        "openai:gpt-4o-mini",
-        temperature=0.3  # Lower temperature for more consistent routing
+def create_math_agent():
+    """Create a math agent specialized in mathematical calculations."""
+    math_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.1),
+        tools=[add, multiply],
+        prompt=(
+            "You are a math specialist. Your role is to help with mathematical "
+            "calculations and problem solving. Use the available tools for "
+            "computations when needed. Be precise and clear in your explanations."
+        ),
+        name="math_agent"
     )
+    return math_agent
 
-    # Create the chat agent
-    chat_agent = create_chat_agent()
 
-    # Create supervisor with a single chat agent
+def create_agent_supervisor():
+    """Create a supervisor to manage research and math agents."""
+    # Create the specialized agents
+    research_agent = create_research_agent()
+    math_agent = create_math_agent()
+
+    # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        agents=[chat_agent],
-        model=supervisor_llm,
+        [research_agent, math_agent],  # Pass agents as first positional argument
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing a chat assistant. "
-            "For any user message, delegate to the chat_assistant to provide "
-            "a helpful and natural response. The chat assistant is designed "
-            "to handle general conversation and questions."
+            "You are a supervisor managing two agents:\n"
+            "- a research agent. Assign research-related tasks to this agent\n"
+            "- a math agent. Assign math-related tasks to this agent\n"
+            "Assign work to one agent at a time, do not call agents in parallel.\n"
+            "Do not do any work yourself."
         ),
-        output_mode="last_message",  # Only return the final response
-        add_handoff_messages=False,  # Keep responses clean for simple chat
+        output_mode="last_message",
+        add_handoff_back_messages=True,  # Enable proper handoff tracking
     )
 
     return supervisor
 
 
 # Define the main graph
-graph = create_chat_supervisor().compile(name="Chat Agent with Supervisor")
+graph = create_agent_supervisor().compile(name="Multi-Agent Supervisor")
