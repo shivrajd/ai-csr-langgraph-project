@@ -15,6 +15,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langgraph_supervisor import create_supervisor
+from langgraph.checkpoint.memory import MemorySaver
 
 # Load environment variables
 load_dotenv()
@@ -106,5 +107,11 @@ def create_agent_supervisor():
     return supervisor
 
 
-# Define the main graph
-graph = create_agent_supervisor().compile(name="Multi-Agent Supervisor")
+# Create memory checkpointer for session-based conversation memory
+checkpointer = MemorySaver()
+
+# Define the main graph with memory persistence
+graph = create_agent_supervisor().compile(
+    name="Multi-Agent Supervisor",
+    checkpointer=checkpointer
+)
