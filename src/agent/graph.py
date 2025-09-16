@@ -83,22 +83,60 @@ def create_math_agent():
     return math_agent
 
 
+def create_knowledge_agent():
+    """Create a knowledge agent specialized in RAG-based knowledge retrieval."""
+    from src.agent.tools.rag_tools import retrieve_knowledge
+
+    knowledge_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
+        tools=[retrieve_knowledge],
+        prompt=(
+            "You are a knowledge specialist with access to the company's comprehensive knowledge base. "
+            "Your primary responsibility is to provide accurate, authoritative information about products, "
+            "policies, procedures, and frequently asked questions.\n\n"
+            "ALWAYS use the retrieve_knowledge tool FIRST for any informational queries about:\n"
+            "- Product specifications, features, and details\n"
+            "- Company policies (shipping, returns, warranty, etc.)\n"
+            "- Technical documentation and troubleshooting\n"
+            "- Frequently asked questions and procedures\n\n"
+            "Guidelines:\n"
+            "- Use retrieve_knowledge before providing any product or policy information\n"
+            "- Base your responses primarily on retrieved knowledge base content\n"
+            "- If knowledge base lacks specific information, clearly state this limitation\n"
+            "- Provide comprehensive, accurate answers with specific details when available\n"
+            "- Cite or reference the knowledge base content when applicable\n\n"
+            "Be thorough, precise, and always prioritize knowledge base information over general knowledge."
+        ),
+        name="knowledge_agent"
+    )
+    return knowledge_agent
+
+
 def create_agent_supervisor():
-    """Create a supervisor to manage research and math agents."""
+    """Create a supervisor to manage research, math, and knowledge agents."""
     # Create the specialized agents
     research_agent = create_research_agent()
     math_agent = create_math_agent()
+    knowledge_agent = create_knowledge_agent()
 
     # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        [research_agent, math_agent],  # Pass agents as first positional argument
+        [research_agent, math_agent, knowledge_agent],  # Pass agents as first positional argument
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing two agents:\n"
-            "- a research agent. Assign research-related tasks to this agent\n"
-            "- a math agent. Assign math-related tasks to this agent\n"
-            "Assign work to one agent at a time, do not call agents in parallel.\n"
-            "Do not do any work yourself."
+            "You are a supervisor managing three specialized agents:\n\n"
+            "- **knowledge_agent**: For product information, company policies, shipping/returns, "
+            "warranty details, FAQ content, and any questions requiring company knowledge base lookup. "
+            "PRIORITIZE this agent for customer service questions.\n\n"
+            "- **research_agent**: For web searches and general research tasks that require "
+            "external information not in the knowledge base.\n\n"
+            "- **math_agent**: For mathematical calculations and problem solving.\n\n"
+            "Routing Strategy:\n"
+            "1. For customer service questions about products, policies, or procedures → knowledge_agent\n"
+            "2. For general research or web search needs → research_agent\n"
+            "3. For calculations or mathematical problems → math_agent\n\n"
+            "Always assign work to ONE agent at a time. Do not call agents in parallel.\n"
+            "Do not do any work yourself - delegate to the appropriate specialist."
         ),
         output_mode="last_message",
         add_handoff_back_messages=True,  # Enable proper handoff tracking
