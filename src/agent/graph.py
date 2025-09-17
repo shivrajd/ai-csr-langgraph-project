@@ -15,7 +15,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langgraph_supervisor import create_supervisor
-from langgraph.checkpoint.memory import MemorySaver
+# Removed MemorySaver - LangGraph API handles persistence automatically
 
 # Load environment variables
 load_dotenv()
@@ -112,29 +112,63 @@ def create_knowledge_agent():
     return knowledge_agent
 
 
+def create_orders_agent():
+    """Create an orders management agent specialized in order lookup and status tracking."""
+    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number
+
+    orders_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
+        tools=[lookup_order, get_order_status, get_tracking_number],
+        prompt=(
+            "You are an orders specialist responsible for helping customers with order-related inquiries. "
+            "Your primary functions include order lookups, status updates, and tracking information.\n\n"
+            "ALWAYS use the appropriate order tool for customer inquiries about:\n"
+            "- Order details and information (use lookup_order)\n"
+            "- Current order status (use get_order_status)\n"
+            "- Shipping and tracking information (use get_tracking_number)\n\n"
+            "Guidelines:\n"
+            "- Ask for the order ID if not provided by the customer\n"
+            "- Use lookup_order for comprehensive order details\n"
+            "- Use get_order_status for quick status checks\n"
+            "- Use get_tracking_number specifically for tracking requests\n"
+            "- Present information clearly and offer additional help when appropriate\n"
+            "- If an order isn't found, suggest double-checking the order ID format\n"
+            "- Be empathetic and helpful, especially for issues like cancellations or delays\n\n"
+            "Be accurate, helpful, and always use the specific tools available to provide precise order information."
+        ),
+        name="orders_agent"
+    )
+    return orders_agent
+
+
 def create_agent_supervisor():
-    """Create a supervisor to manage research, math, and knowledge agents."""
+    """Create a supervisor to manage research, math, knowledge, and orders agents."""
     # Create the specialized agents
     research_agent = create_research_agent()
     math_agent = create_math_agent()
     knowledge_agent = create_knowledge_agent()
+    orders_agent = create_orders_agent()
 
     # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        [research_agent, math_agent, knowledge_agent],  # Pass agents as first positional argument
+        [research_agent, math_agent, knowledge_agent, orders_agent],  # Pass agents as first positional argument
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing three specialized agents:\n\n"
+            "You are a supervisor managing four specialized agents:\n\n"
+            "- **orders_agent**: For order-specific inquiries including order lookup, status checks, "
+            "tracking information, and any questions about specific customer orders. "
+            "PRIORITIZE this agent for order-related questions.\n\n"
             "- **knowledge_agent**: For product information, company policies, shipping/returns, "
             "warranty details, FAQ content, and any questions requiring company knowledge base lookup. "
-            "PRIORITIZE this agent for customer service questions.\n\n"
+            "Use for general policy questions but NOT specific order inquiries.\n\n"
             "- **research_agent**: For web searches and general research tasks that require "
             "external information not in the knowledge base.\n\n"
             "- **math_agent**: For mathematical calculations and problem solving.\n\n"
             "Routing Strategy:\n"
-            "1. For customer service questions about products, policies, or procedures → knowledge_agent\n"
-            "2. For general research or web search needs → research_agent\n"
-            "3. For calculations or mathematical problems → math_agent\n\n"
+            "1. For specific order inquiries (lookup, status, tracking) → orders_agent\n"
+            "2. For customer service questions about products, policies, or procedures → knowledge_agent\n"
+            "3. For general research or web search needs → research_agent\n"
+            "4. For calculations or mathematical problems → math_agent\n\n"
             "CRITICAL RESPONSIBILITY:\n"
             "After a worker agent provides information, you MUST synthesize and present "
             "the actual details to the user. Never just acknowledge that information was provided.\n\n"
@@ -145,12 +179,14 @@ def create_agent_supervisor():
             "- If policies were retrieved, summarize the key points with specifics\n"
             "- If shipping rates were found, include the actual prices and timeframes\n\n"
             "Examples of GOOD vs BAD responses:\n"
+            "❌ BAD: 'I've looked up your order for you'\n"
+            "✅ GOOD: 'Order ORD-001 was delivered on January 21st. It contained 2 Chrome Battery CB12-7.5 units totaling $149.99'\n"
             "❌ BAD: 'I've provided the shipping rates for you'\n"
             "✅ GOOD: 'Our international shipping rates are: Standard shipping (10-21 days) costs $19.99, Express shipping (5-10 days) costs $39.99'\n"
             "❌ BAD: 'The calculation is complete. The answer is provided above'\n"
             "✅ GOOD: 'The result of 2 + 2 is 4'\n"
-            "❌ BAD: 'I've provided information about our return policy'\n"
-            "✅ GOOD: 'Our return policy allows returns within 30 days of purchase with original receipt for a full refund'\n\n"
+            "❌ BAD: 'I've checked your tracking information'\n"
+            "✅ GOOD: 'Your order ORD-002 tracking number is 1Z999AA1012345676 with UPS. Expected delivery is January 25th'\n\n"
             "Always assign work to ONE agent at a time. Do not call agents in parallel.\n"
             "Delegate to the appropriate specialist, then synthesize their response with full details."
         ),
@@ -161,11 +197,7 @@ def create_agent_supervisor():
     return supervisor
 
 
-# Create memory checkpointer for session-based conversation memory
-checkpointer = MemorySaver()
-
-# Define the main graph with memory persistence
+# Define the main graph - persistence is handled automatically by LangGraph API
 graph = create_agent_supervisor().compile(
-    name="Multi-Agent Supervisor",
-    checkpointer=checkpointer
+    name="Multi-Agent Supervisor"
 )
