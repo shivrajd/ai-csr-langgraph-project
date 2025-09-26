@@ -7,8 +7,14 @@ product catalog system in future phases.
 """
 
 import logging
+import os
+import requests
 from typing import Dict, Any, List
 from langchain_core.tools import tool
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +101,10 @@ CATEGORY_MAPPING = {
 @tool
 def search_products(query: str) -> str:
     """
-    Search for products by name, category, or keywords.
+    Search for products by name, category, or keywords from the Shopify store.
 
-    This tool searches the product catalog for matching products based on
-    name, category, applications, or features.
+    This tool searches the live Shopify product catalog for matching products based on
+    name, category, vendor, product type, and tags.
 
     Args:
         query: Search term (product name, category, or keywords)
@@ -107,23 +113,153 @@ def search_products(query: str) -> str:
         List of matching products with basic information
     """
     try:
-        logger.info(f"Searching products for: {query}")
+        logger.info(f"Searching Shopify products for: {query}")
+
+        # Check if Shopify credentials are configured
+        store_domain = os.getenv('SHOPIFY_STORE_DOMAIN')
+        access_token = os.getenv('SHOPIFY_ACCESS_TOKEN')
+        api_version = os.getenv('SHOPIFY_API_VERSION', '2024-10')
+
+        if not store_domain or not access_token:
+            logger.warning("Shopify credentials not configured, falling back to test data")
+            return _search_test_products(query)
+
+        # GraphQL query for product search
+        graphql_query = """
+        query SearchProducts($query: String!) {
+            products(first: 20, query: $query) {
+                edges {
+                    node {
+                        id
+                        title
+                        description(truncateAt: 200)
+                        productType
+                        vendor
+                        status
+                        totalInventory
+                        priceRangeV2 {
+                            minVariantPrice {
+                                amount
+                                currencyCode
+                            }
+                        }
+                        variants(first: 1) {
+                            edges {
+                                node {
+                                    sku
+                                    price
+                                    inventoryQuantity
+                                    availableForSale
+                                }
+                            }
+                        }
+                        tags
+                    }
+                }
+            }
+        }
+        """
+
+        # Make GraphQL request to Shopify
+        response = requests.post(
+            f"https://{store_domain}/admin/api/{api_version}/graphql.json",
+            json={"query": graphql_query, "variables": {"query": query}},
+            headers={
+                "X-Shopify-Access-Token": access_token,
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            logger.error(f"Shopify API error: {response.status_code} - {response.text}")
+            return f"Unable to search products right now. API returned status {response.status_code}."
+
+        data = response.json()
+
+        # Check for GraphQL errors
+        if 'errors' in data:
+            logger.error(f"GraphQL errors: {data['errors']}")
+            return "There was an issue with the product search query. Please try again."
+
+        products = data.get('data', {}).get('products', {}).get('edges', [])
+
+        if not products:
+            return f"No products found matching '{query}'. Try searching for different keywords or product categories."
+
+        # Format results
+        results = []
+        results.append(f"Found {len(products)} product(s) matching '{query}':\n")
+
+        for edge in products:
+            product = edge['node']
+
+            # Extract basic info
+            title = product.get('title', 'Unknown Product')
+            description = product.get('description', 'No description available')
+            product_type = product.get('productType', 'Uncategorized')
+            vendor = product.get('vendor', 'Unknown Vendor')
+            status = product.get('status', 'UNKNOWN')
+            total_inventory = product.get('totalInventory', 0) or 0
+
+            # Extract price info
+            price_range = product.get('priceRangeV2', {})
+            min_price = price_range.get('minVariantPrice', {})
+            price_amount = min_price.get('amount', '0.00')
+            currency = min_price.get('currencyCode', 'USD')
+            formatted_price = f"${price_amount} {currency}"
+
+            # Extract variant info
+            variants = product.get('variants', {}).get('edges', [])
+            sku = "N/A"
+            if variants:
+                first_variant = variants[0]['node']
+                sku = first_variant.get('sku') or 'N/A'
+
+            # Determine stock status
+            if total_inventory > 20:
+                stock_status = "in_stock"
+                stock_emoji = "✅"
+            elif total_inventory > 0:
+                stock_status = "low_stock"
+                stock_emoji = "⚠️"
+            else:
+                stock_status = "out_of_stock"
+                stock_emoji = "❌"
+
+            # Format output
+            results.append(f"{stock_emoji} **{title}** (SKU: {sku})")
+            results.append(f"   Price: {formatted_price}")
+            results.append(f"   Category: {product_type}")
+            results.append(f"   Vendor: {vendor}")
+            results.append(f"   Stock: {total_inventory} units ({stock_status.replace('_', ' ')})")
+            results.append(f"   Description: {description}")
+            results.append("")
+
+        return "\n".join(results)
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error searching Shopify products: {e}")
+        return "Unable to connect to the product catalog right now. Please try again in a moment."
+    except Exception as e:
+        logger.error(f"Error searching Shopify products for '{query}': {e}")
+        return "I'm having trouble searching the product catalog right now. Please try again in a moment."
+
+
+def _search_test_products(query: str) -> str:
+    """Fallback function to search test products when Shopify is not configured."""
+    try:
+        logger.info(f"Using test data for product search: {query}")
 
         query_lower = query.lower().strip()
         matching_products = []
 
-        # Search through all products
+        # Search through test products
         for product_id, product in TEST_PRODUCTS.items():
-            # Check if query matches product name, category, applications, features, or specifications
-            # TODO(human): Add search logic to check within product specifications
-            specs_match = any(query_lower in str(spec_value).lower() for spec_value in product["specifications"].values())
-
             if (query_lower in product["name"].lower() or
                 query_lower in product["category"].lower() or
                 any(query_lower in app.lower() for app in product["applications"]) or
-                any(query_lower in feature.lower() for feature in product["features"]) or
-                specs_match):
-
+                any(query_lower in feature.lower() for feature in product["features"])):
                 matching_products.append(product)
 
         # Also check category mapping
@@ -136,7 +272,7 @@ def search_products(query: str) -> str:
 
         if matching_products:
             results = []
-            results.append(f"Found {len(matching_products)} product(s) matching '{query}':\n")
+            results.append(f"Found {len(matching_products)} product(s) matching '{query}' (using test data):\n")
 
             for product in matching_products:
                 stock_emoji = "✅" if product["stock_status"] == "in_stock" else "⚠️"
@@ -149,29 +285,392 @@ def search_products(query: str) -> str:
 
             return "\n".join(results)
         else:
-            return f"No products found matching '{query}'. Try searching for 'batteries', 'chargers', '12V', '6V', or specific product names like 'CB12-7.5'."
+            return f"No products found matching '{query}'. Try searching for 'batteries', 'chargers', '12V', '6V', or specific product names."
 
     except Exception as e:
-        logger.error(f"Error searching products for '{query}': {e}")
-        return "I'm having trouble searching the product catalog right now. Please try again in a moment."
+        logger.error(f"Error in fallback product search: {e}")
+        return "I'm having trouble searching the product catalog right now."
 
 
 @tool
 def get_product_details(product_id: str) -> str:
     """
-    Get comprehensive details for a specific product.
+    Get comprehensive details for a specific product from the Shopify store.
 
     This tool retrieves complete product information including specifications,
-    pricing, stock status, and technical details.
+    pricing, stock status, variants, and technical details.
 
     Args:
-        product_id: Product ID or SKU to retrieve details for
+        product_id: Product ID, SKU, or handle to retrieve details for
 
     Returns:
         Complete product details or error message if product not found
     """
     try:
         logger.info(f"Getting product details for: {product_id}")
+
+        # Check if Shopify credentials are configured
+        store_domain = os.getenv('SHOPIFY_STORE_DOMAIN')
+        access_token = os.getenv('SHOPIFY_ACCESS_TOKEN')
+        api_version = os.getenv('SHOPIFY_API_VERSION', '2024-10')
+
+        if not store_domain or not access_token:
+            logger.warning("Shopify credentials not configured, falling back to test data")
+            return _get_test_product_details(product_id)
+
+        # Step 1: Determine if we have a GID, SKU, or handle
+        product_gid = None
+        if product_id.startswith('gid://shopify/Product/'):
+            product_gid = product_id
+        else:
+            # Search for product by SKU or handle
+            search_query = f'sku:{product_id}' if not product_id.islower() else f'handle:{product_id}'
+
+            find_product_query = """
+            query FindProduct($query: String!) {
+                products(first: 1, query: $query) {
+                    edges {
+                        node {
+                            id
+                        }
+                    }
+                }
+            }
+            """
+
+            try:
+                response = requests.post(
+                    f"https://{store_domain}/admin/api/{api_version}/graphql.json",
+                    json={"query": find_product_query, "variables": {"query": search_query}},
+                    headers={
+                        "X-Shopify-Access-Token": access_token,
+                        "Content-Type": "application/json"
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'errors' not in data:
+                        products = data.get('data', {}).get('products', {}).get('edges', [])
+                        if products:
+                            product_gid = products[0]['node']['id']
+
+            except Exception as e:
+                logger.error(f"Error finding product by {product_id}: {e}")
+                return f"Unable to find product '{product_id}'. Please try again in a moment."
+
+        if not product_gid:
+            return f"Product '{product_id}' not found. Please check the product ID, SKU, or handle and try again."
+
+        # Step 2: Fetch detailed product information
+        detailed_query = """
+        query GetProductDetails($id: ID!) {
+            product(id: $id) {
+                id
+                title
+                description
+                descriptionHtml
+                handle
+                productType
+                vendor
+                status
+                tags
+                seo {
+                    title
+                    description
+                }
+                totalInventory
+                priceRangeV2 {
+                    minVariantPrice {
+                        amount
+                        currencyCode
+                    }
+                    maxVariantPrice {
+                        amount
+                        currencyCode
+                    }
+                }
+                variants(first: 10) {
+                    edges {
+                        node {
+                            id
+                            title
+                            sku
+                            price
+                            compareAtPrice
+                            inventoryQuantity
+                            availableForSale
+                            selectedOptions {
+                                name
+                                value
+                            }
+                            inventoryItem {
+                                tracked
+                            }
+                        }
+                    }
+                }
+                collections(first: 5) {
+                    edges {
+                        node {
+                            title
+                        }
+                    }
+                }
+                media(first: 5) {
+                    edges {
+                        node {
+                            alt
+                            mediaContentType
+                            ... on MediaImage {
+                                image {
+                                    url
+                                    altText
+                                }
+                            }
+                        }
+                    }
+                }
+                metafields(first: 20, namespace: "custom") {
+                    edges {
+                        node {
+                            key
+                            value
+                            type
+                        }
+                    }
+                }
+            }
+        }
+        """
+
+        try:
+            response = requests.post(
+                f"https://{store_domain}/admin/api/{api_version}/graphql.json",
+                json={"query": detailed_query, "variables": {"id": product_gid}},
+                headers={
+                    "X-Shopify-Access-Token": access_token,
+                    "Content-Type": "application/json"
+                },
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Shopify API error: {response.status_code} - {response.text}")
+                return f"Unable to get product details right now. API returned status {response.status_code}."
+
+            data = response.json()
+
+            # Check for GraphQL errors
+            if 'errors' in data:
+                logger.error(f"GraphQL errors: {data['errors']}")
+                return "There was an issue fetching product details. Please try again."
+
+            product = data.get('data', {}).get('product')
+            if not product:
+                return f"Product '{product_id}' not found."
+
+            # Format the response
+            return _format_shopify_product_details(product)
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error fetching product details: {e}")
+            return "Unable to connect to retrieve product details right now. Please try again in a moment."
+        except Exception as e:
+            logger.error(f"Error fetching product details for '{product_id}': {e}")
+            return "I'm having trouble retrieving product details right now. Please try again in a moment."
+
+    except Exception as e:
+        logger.error(f"Error getting product details for '{product_id}': {e}")
+        return "I'm having trouble retrieving product details right now. Please try again in a moment."
+
+
+def _format_shopify_product_details(product: dict) -> str:
+    """Format Shopify product data to match the existing structure."""
+    try:
+        details = []
+
+        # Basic product information
+        title = product.get('title', 'Unknown Product')
+        handle = product.get('handle', '')
+        product_type = product.get('productType', 'Uncategorized')
+        vendor = product.get('vendor', 'Unknown Vendor')
+        description = product.get('description', 'No description available')
+        total_inventory = product.get('totalInventory', 0) or 0
+
+        # Get primary variant info
+        variants = product.get('variants', {}).get('edges', [])
+        primary_sku = "N/A"
+        if variants:
+            primary_sku = variants[0]['node'].get('sku') or 'N/A'
+
+        # Price information
+        price_range = product.get('priceRangeV2', {})
+        min_price = price_range.get('minVariantPrice', {})
+        max_price = price_range.get('maxVariantPrice', {})
+
+        price_amount = min_price.get('amount', '0.00')
+        currency = min_price.get('currencyCode', 'USD')
+
+        if min_price.get('amount') == max_price.get('amount'):
+            formatted_price = f"${price_amount} {currency}"
+        else:
+            formatted_price = f"${min_price.get('amount', '0.00')} - ${max_price.get('amount', '0.00')} {currency}"
+
+        # Stock status
+        if total_inventory > 20:
+            stock_status = "in_stock"
+            stock_emoji = "✅"
+        elif total_inventory > 0:
+            stock_status = "low_stock"
+            stock_emoji = "⚠️"
+        else:
+            stock_status = "out_of_stock"
+            stock_emoji = "❌"
+
+        # Build the response
+        details.append(f"📦 **{title}**")
+        details.append(f"SKU: {primary_sku}")
+        details.append(f"Handle: {handle}")
+        details.append(f"Category: {product_type}")
+        details.append(f"Vendor: {vendor}")
+        details.append(f"Price: {formatted_price}")
+        details.append("")
+
+        # Description
+        details.append("**Description:**")
+        details.append(description)
+        details.append("")
+
+        # Product specifications from metafields and variants
+        details.append("**Technical Specifications:**")
+
+        # Extract specifications from metafields
+        metafields = product.get('metafields', {}).get('edges', [])
+        spec_found = False
+        for edge in metafields:
+            field = edge['node']
+            key = field.get('key', '').replace('_', ' ').title()
+            value = field.get('value', '')
+            if key and value:
+                details.append(f"• {key}: {value}")
+                spec_found = True
+
+        # If no metafields, extract from variant options
+        if not spec_found and variants:
+            variant_specs = {}
+            for edge in variants:
+                variant = edge['node']
+                options = variant.get('selectedOptions', [])
+                for option in options:
+                    name = option.get('name', '')
+                    value = option.get('value', '')
+                    if name and value and name.lower() not in ['title', 'default title']:
+                        variant_specs[name] = variant_specs.get(name, set())
+                        variant_specs[name].add(value)
+
+            for spec_name, values in variant_specs.items():
+                if len(values) == 1:
+                    details.append(f"• {spec_name}: {next(iter(values))}")
+                else:
+                    details.append(f"• {spec_name}: {', '.join(sorted(values))}")
+                spec_found = True
+
+        if not spec_found:
+            details.append("• Product Type: " + product_type)
+            if vendor != "Unknown Vendor":
+                details.append("• Brand: " + vendor)
+
+        details.append("")
+
+        # Stock Information
+        details.append("**Availability:**")
+        details.append(f"{stock_emoji} Stock Status: {stock_status.replace('_', ' ').title()}")
+        details.append(f"• Total Inventory: {total_inventory} units")
+
+        # Variant details if multiple variants
+        if len(variants) > 1:
+            details.append(f"• Available Variants: {len(variants)}")
+            for i, edge in enumerate(variants[:5], 1):  # Show up to 5 variants
+                variant = edge['node']
+                variant_title = variant.get('title', f'Variant {i}')
+                variant_price = variant.get('price', '0.00')
+                variant_inventory = variant.get('inventoryQuantity', 0) or 0
+                variant_sku = variant.get('sku') or 'N/A'
+
+                details.append(f"  - {variant_title}: ${variant_price} {currency} (SKU: {variant_sku}, Stock: {variant_inventory})")
+
+        details.append("")
+
+        # Applications from collections and tags
+        collections = product.get('collections', {}).get('edges', [])
+        tags = product.get('tags', [])
+
+        applications = []
+        for edge in collections:
+            collection_title = edge['node'].get('title', '')
+            if collection_title and collection_title not in applications:
+                applications.append(collection_title)
+
+        # Add relevant tags as applications
+        relevant_tags = [tag for tag in tags if any(keyword in tag.lower() for keyword in
+                        ['battery', 'power', 'energy', 'backup', 'solar', 'marine', 'automotive', 'ups'])]
+        applications.extend(relevant_tags[:3])  # Add up to 3 relevant tags
+
+        if applications:
+            details.append("**Recommended Applications:**")
+            for app in applications[:5]:  # Show up to 5 applications
+                details.append(f"• {app}")
+        else:
+            details.append("**Recommended Applications:**")
+            details.append(f"• {product_type}")
+            details.append("• General Use")
+
+        details.append("")
+
+        # Key Features from tags and product info
+        features = []
+
+        # Add relevant tags as features
+        feature_tags = [tag for tag in tags if tag not in applications and len(tag) > 2]
+        features.extend(feature_tags[:4])  # Add up to 4 feature tags
+
+        # Add default features based on product type
+        if not features:
+            if 'battery' in product_type.lower():
+                features.extend(['Reliable Performance', 'Long-lasting', 'Professional Grade'])
+            elif 'charger' in product_type.lower():
+                features.extend(['Smart Charging', 'Multiple Modes', 'Safety Features'])
+            else:
+                features.extend(['High Quality', 'Professional Grade', 'Durable Construction'])
+
+        details.append("**Key Features:**")
+        for feature in features[:5]:  # Show up to 5 features
+            details.append(f"• {feature}")
+        details.append("")
+
+        # SEO and additional info
+        seo = product.get('seo', {})
+        if seo.get('description'):
+            details.append("**Additional Information:**")
+            details.append(seo['description'])
+            details.append("")
+
+        # Warranty info (placeholder - would come from metafields in real implementation)
+        details.append("**Warranty:** Standard manufacturer warranty applies")
+
+        return "\n".join(details)
+
+    except Exception as e:
+        logger.error(f"Error formatting Shopify product details: {e}")
+        return "Product details retrieved but could not be formatted properly."
+
+
+def _get_test_product_details(product_id: str) -> str:
+    """Fallback function to get test product details when Shopify is not configured."""
+    try:
+        logger.info(f"Using test data for product details: {product_id}")
 
         # Normalize product ID
         product_id = product_id.strip().upper()
@@ -180,7 +679,7 @@ def get_product_details(product_id: str) -> str:
             product = TEST_PRODUCTS[product_id]
 
             details = []
-            details.append(f"📦 **{product['name']}**")
+            details.append(f"📦 **{product['name']}** (Test Data)")
             details.append(f"SKU: {product['sku']}")
             details.append(f"Category: {product['category']}")
             details.append(f"Price: {product['price']}")
@@ -221,11 +720,11 @@ def get_product_details(product_id: str) -> str:
 
             return "\n".join(details)
         else:
-            return f"Product '{product_id}' not found. Available products: CB12-7.5, CB6-12, BCP-SMART. Please check the product ID and try again."
+            return f"Product '{product_id}' not found in test data. Available products: CB12-7.5, CB6-12, BCP-SMART. Please check the product ID and try again."
 
     except Exception as e:
-        logger.error(f"Error getting product details for '{product_id}': {e}")
-        return "I'm having trouble retrieving product details right now. Please try again in a moment."
+        logger.error(f"Error in fallback product details: {e}")
+        return "I'm having trouble retrieving product details right now."
 
 
 @tool
