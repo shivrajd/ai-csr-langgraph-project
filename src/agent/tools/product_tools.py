@@ -23,6 +23,7 @@ TEST_PRODUCTS = {
     "CB12-7.5": {
         "product_id": "CB12-7.5",
         "sku": "CB12-7.5",
+        "handle": "cb12-7-5",
         "name": "Chrome Battery CB12-7.5",
         "category": "Sealed Lead Acid Batteries",
         "price": "$74.99",
@@ -45,6 +46,7 @@ TEST_PRODUCTS = {
     "CB6-12": {
         "product_id": "CB6-12",
         "sku": "CB6-12",
+        "handle": "cb6-12",
         "name": "Chrome Battery CB6-12",
         "category": "Deep Cycle Batteries",
         "price": "$89.99",
@@ -67,6 +69,7 @@ TEST_PRODUCTS = {
     "BCP-SMART": {
         "product_id": "BCP-SMART",
         "sku": "BCP-SMART",
+        "handle": "battery-charger-pro",
         "name": "Battery Charger Pro",
         "category": "Battery Chargers",
         "price": "$149.99",
@@ -96,6 +99,22 @@ CATEGORY_MAPPING = {
     "chargers": ["BCP-SMART"],
     "accessories": ["BCP-SMART"]
 }
+
+
+def _construct_product_url(handle: str) -> str:
+    """
+    Construct a customer-facing product URL from a product handle.
+
+    Args:
+        handle: Product handle (URL-safe identifier)
+
+    Returns:
+        Full product URL on the public store
+    """
+    store_url = os.getenv('SHOPIFY_STORE_URL', 'https://chromebattery.com')
+    # Remove trailing slash if present
+    store_url = store_url.rstrip('/')
+    return f"{store_url}/products/{handle}"
 
 
 @tool
@@ -132,6 +151,7 @@ def search_products(query: str) -> str:
                     node {
                         id
                         title
+                        handle
                         description(truncateAt: 200)
                         productType
                         vendor
@@ -196,6 +216,7 @@ def search_products(query: str) -> str:
 
             # Extract basic info
             title = product.get('title', 'Unknown Product')
+            handle = product.get('handle', '')
             description = product.get('description', 'No description available')
             product_type = product.get('productType', 'Uncategorized')
             vendor = product.get('vendor', 'Unknown Vendor')
@@ -227,8 +248,14 @@ def search_products(query: str) -> str:
                 stock_status = "out_of_stock"
                 stock_emoji = "❌"
 
-            # Format output
-            results.append(f"{stock_emoji} **{title}** (SKU: {sku})")
+            # Construct product URL
+            product_url = _construct_product_url(handle) if handle else None
+
+            # Format output with clickable title
+            if product_url:
+                results.append(f"{stock_emoji} [**{title}**]({product_url}) (SKU: {sku})")
+            else:
+                results.append(f"{stock_emoji} **{title}** (SKU: {sku})")
             results.append(f"   Price: {formatted_price}")
             results.append(f"   Category: {product_type}")
             results.append(f"   Vendor: {vendor}")
@@ -276,7 +303,9 @@ def _search_test_products(query: str) -> str:
 
             for product in matching_products:
                 stock_emoji = "✅" if product["stock_status"] == "in_stock" else "⚠️"
-                results.append(f"{stock_emoji} **{product['name']}** (SKU: {product['sku']})")
+                # Construct product URL
+                product_url = _construct_product_url(product['handle'])
+                results.append(f"{stock_emoji} [**{product['name']}**]({product_url}) (SKU: {product['sku']})")
                 results.append(f"   Price: {product['price']}")
                 results.append(f"   Category: {product['category']}")
                 results.append(f"   Stock: {product['stock_quantity']} units ({product['stock_status'].replace('_', ' ')})")
@@ -529,8 +558,12 @@ def _format_shopify_product_details(product: dict) -> str:
             stock_status = "out_of_stock"
             stock_emoji = "❌"
 
-        # Build the response
-        details.append(f"📦 **{title}**")
+        # Build the response with clickable title
+        product_url = _construct_product_url(handle) if handle else None
+        if product_url:
+            details.append(f"📦 [**{title}**]({product_url})")
+        else:
+            details.append(f"📦 **{title}**")
         details.append(f"SKU: {primary_sku}")
         details.append(f"Handle: {handle}")
         details.append(f"Category: {product_type}")
@@ -679,7 +712,9 @@ def _get_test_product_details(product_id: str) -> str:
             product = TEST_PRODUCTS[product_id]
 
             details = []
-            details.append(f"📦 **{product['name']}** (Test Data)")
+            # Make title clickable
+            product_url = _construct_product_url(product['handle'])
+            details.append(f"📦 [**{product['name']}**]({product_url}) (Test Data)")
             details.append(f"SKU: {product['sku']}")
             details.append(f"Category: {product['category']}")
             details.append(f"Price: {product['price']}")
