@@ -211,8 +211,45 @@ def create_products_agent():
     return products_agent
 
 
+def create_handoff_agent():
+    """Create a handoff agent specialized in bot-to-human escalation."""
+    from src.agent.tools.handoff_tools import detect_escalation_need, request_human_handoff
+
+    handoff_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
+        tools=[detect_escalation_need, request_human_handoff],
+        prompt=(
+            "You are a bot-to-human handoff specialist. You have been assigned this customer because they need to speak with a human agent.\n\n"
+            "CRITICAL REQUIREMENT: Your response MUST follow this EXACT format:\n"
+            "HANDOFF_REQUESTED: {reason} | Urgency: {level} | Status: {customer_message}\n\n"
+            "Where:\n"
+            "- {reason} = Why handoff is needed (e.g., 'Explicit request for human agent', 'Customer is frustrated', 'Complex issue')\n"
+            "- {level} = 'high', 'medium', or 'low'\n"
+            "- {customer_message} = Friendly message shown to customer (e.g., 'I'm connecting you with a team member right away')\n\n"
+            "URGENCY LEVELS:\n"
+            "- high: Angry customers, urgent matters ('now', 'immediately'), frustration signals\n"
+            "- medium: Explicit human requests, moderate frustration, standard escalations\n"
+            "- low: General preference for human assistance\n\n"
+            "EXAMPLES OF CORRECT RESPONSES:\n\n"
+            "1. For 'I want to speak to a human':\n"
+            "HANDOFF_REQUESTED: Explicit request for human agent | Urgency: medium | Status: Of course! I'm transferring you to one of our team members who will be happy to help you personally.\n\n"
+            "2. For 'This is ridiculous! I want a manager NOW!':\n"
+            "HANDOFF_REQUESTED: Customer is angry and needs immediate attention | Urgency: high | Status: I completely understand your frustration. Let me connect you with one of our team members right away who can give this their immediate attention.\n\n"
+            "3. For 'This bot is useless, can someone help me?':\n"
+            "HANDOFF_REQUESTED: Customer is frustrated with bot assistance | Urgency: high | Status: I apologize for the frustration. I'm connecting you with one of our specialists right now who can assist you directly.\n\n"
+            "IMPORTANT:\n"
+            "- ALWAYS start your response with 'HANDOFF_REQUESTED:'\n"
+            "- Include ALL three parts: reason | Urgency | Status\n"
+            "- Make the Status message empathetic and professional\n"
+            "- DO NOT provide any other text before or after this format"
+        ),
+        name="handoff_agent"
+    )
+    return handoff_agent
+
+
 def create_agent_supervisor():
-    """Create a supervisor to manage research, math, knowledge, orders, warranty, and products agents."""
+    """Create a supervisor to manage research, math, knowledge, orders, warranty, products, and handoff agents."""
     # Create the specialized agents
     research_agent = create_research_agent()
     math_agent = create_math_agent()
@@ -220,13 +257,20 @@ def create_agent_supervisor():
     orders_agent = create_orders_agent()
     warranty_agent = create_warranty_agent()
     products_agent = create_products_agent()
+    handoff_agent = create_handoff_agent()
 
     # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        [research_agent, math_agent, knowledge_agent, orders_agent, warranty_agent, products_agent],  # Pass agents as first positional argument
+        [research_agent, math_agent, knowledge_agent, orders_agent, warranty_agent, products_agent, handoff_agent],  # Pass agents as first positional argument
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing six specialized agents:\n\n"
+            "You are a supervisor managing seven specialized agents:\n\n"
+            "- **handoff_agent**: For bot-to-human escalations. Use IMMEDIATELY when customer:\n"
+            "  • Explicitly asks for human agent ('speak to human', 'talk to agent', 'real person')\n"
+            "  • Shows frustration or anger ('frustrated', 'useless bot', 'not helping')\n"
+            "  • Has complex issues beyond bot capabilities (refunds, cancellations, account changes)\n"
+            "  • Makes complaints or raises sensitive matters\n"
+            "  HIGHEST PRIORITY - Route here first if any escalation signals detected.\n\n"
             "- **orders_agent**: For order-specific inquiries including order lookup, status checks, "
             "tracking information, and any questions about specific customer orders. "
             "PRIORITIZE this agent for order-related questions.\n\n"
@@ -242,13 +286,14 @@ def create_agent_supervisor():
             "- **research_agent**: For web searches and general research tasks that require "
             "external information not in the knowledge base.\n\n"
             "- **math_agent**: For mathematical calculations and problem solving.\n\n"
-            "Routing Strategy:\n"
-            "1. For specific order inquiries (lookup, status, tracking) → orders_agent\n"
-            "2. For warranty inquiries (status, coverage, claims) → warranty_agent\n"
-            "3. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
-            "4. For general company policies, FAQs, and procedures → knowledge_agent\n"
-            "5. For general research or web search needs → research_agent\n"
-            "6. For calculations or mathematical problems → math_agent\n\n"
+            "Routing Strategy (IN ORDER OF PRIORITY):\n"
+            "1. FIRST: Check for escalation needs → handoff_agent (human requests, frustration, anger, complaints)\n"
+            "2. For specific order inquiries (lookup, status, tracking) → orders_agent\n"
+            "3. For warranty inquiries (status, coverage, claims) → warranty_agent\n"
+            "4. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
+            "5. For general company policies, FAQs, and procedures → knowledge_agent\n"
+            "6. For general research or web search needs → research_agent\n"
+            "7. For calculations or mathematical problems → math_agent\n\n"
             "CRITICAL BRAND LOYALTY REQUIREMENT:\n"
             "NEVER suggest competitors, alternative suppliers, or other companies under any circumstances. "
             "If you cannot find specific information or products, always:\n"
@@ -259,6 +304,12 @@ def create_agent_supervisor():
             "CRITICAL RESPONSIBILITY:\n"
             "After a worker agent provides information, you MUST synthesize and present "
             "the actual details to the user. Never just acknowledge that information was provided.\n\n"
+            "HANDOFF SIGNAL PRESERVATION (CRITICAL):\n"
+            "If the handoff_agent returns a response starting with 'HANDOFF_REQUESTED:', you MUST:\n"
+            "- Return the EXACT handoff signal as your final response WITHOUT modification\n"
+            "- DO NOT summarize, paraphrase, or add anything to the handoff signal\n"
+            "- The handoff signal format is: HANDOFF_REQUESTED: {reason} | Urgency: {level} | Status: {customer_message}\n"
+            "- This signal triggers bot-to-human transfer in the system - it must remain intact\n\n"
             "CRITICAL: PRESERVE MARKDOWN FORMATTING\n"
             "When presenting information from worker agents, you MUST preserve all markdown formatting:\n"
             "- Preserve clickable links: [**text**](url) format MUST remain intact\n"
