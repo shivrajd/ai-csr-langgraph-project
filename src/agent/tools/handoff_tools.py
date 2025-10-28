@@ -36,10 +36,11 @@ def detect_escalation_need(
     Returns:
         Analysis result indicating if escalation is needed
     """
-    # Explicit human request keywords
+    # Explicit human request keywords - use specific phrases to avoid false positives
     human_keywords = [
-        "human", "person", "agent", "representative", "manager",
-        "supervisor", "real person", "actual person", "someone"
+        "human", "human agent", "real agent", "live agent", "speak to an agent",
+        "talk to an agent", "representative", "manager",
+        "supervisor", "real person", "actual person"
     ]
 
     # Frustration/anger indicators
@@ -55,6 +56,21 @@ def detect_escalation_need(
 
     # Check for frustration
     has_frustration = any(keyword in message_lower for keyword in frustration_keywords)
+
+    # Filter out false positives - questions about order lookup methods
+    # These are normal informational questions, not escalation requests
+    order_method_questions = [
+        "email address", "use email", "share email", "provide email",
+        "send email", "enter email", "give email", "email instead",
+        "order number", "order id", "give order", "provide order"
+    ]
+
+    is_order_method_question = any(phrase in message_lower for phrase in order_method_questions)
+
+    # Don't escalate if customer is just asking about how to provide information
+    # UNLESS they're also expressing frustration
+    if is_order_method_question and not has_frustration and sentiment == "neutral":
+        return "NO_ESCALATION_NEEDED|Customer asking about order lookup methods - not an escalation"
 
     # Determine escalation need
     needs_escalation = (

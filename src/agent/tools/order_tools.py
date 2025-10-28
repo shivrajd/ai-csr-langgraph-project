@@ -342,7 +342,7 @@ def get_tracking_number(order_id: str) -> str:
     that have been shipped. An order may have multiple shipments.
 
     Args:
-        order_id: The order number to get tracking information for
+        order_id: The order number or email address to get tracking information for
 
     Returns:
         Tracking information or appropriate message based on order status
