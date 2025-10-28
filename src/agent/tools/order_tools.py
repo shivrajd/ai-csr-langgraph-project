@@ -1,107 +1,135 @@
 """
 Order Management Tools for the Orders Agent.
 
-This module provides placeholder order management functionality with static test data
-for various order scenarios. This will be iteratively built into a fully functional
-system in future phases.
+This module provides order management functionality using real data from Supabase
+tables (shipworks_order and shipworks_shipment).
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any
+import os
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 from langchain_core.tools import tool
+
+# Load environment variables if not already loaded
+from dotenv import load_dotenv
+load_dotenv()
+
+# Import Supabase client utilities
+from src.agent.tools.supabase_client import get_supabase_client, query_orders_table, query_shipments_by_order_id
 
 logger = logging.getLogger(__name__)
 
-# Static test order data with various scenarios
-TEST_ORDERS = {
-    "ORD-001": {
-        "order_id": "ORD-001",
-        "customer_name": "John Smith",
-        "customer_email": "john.smith@example.com",
-        "order_date": "2024-01-15",
-        "status": "delivered",
-        "total_amount": "$149.99",
-        "items": [
-            {"name": "Chrome Battery CB12-7.5", "quantity": 2, "price": "$74.99"}
-        ],
-        "shipping_address": "123 Main St, Anytown, ST 12345",
-        "tracking_number": "1Z999AA1012345675",
-        "carrier": "UPS",
-        "estimated_delivery": "2024-01-22",
-        "actual_delivery": "2024-01-21"
-    },
-    "ORD-002": {
-        "order_id": "ORD-002",
-        "customer_name": "Sarah Johnson",
-        "customer_email": "sarah.j@example.com",
-        "order_date": "2024-01-18",
-        "status": "shipped",
-        "total_amount": "$89.99",
-        "items": [
-            {"name": "Chrome Battery CB6-12", "quantity": 1, "price": "$89.99"}
-        ],
-        "shipping_address": "456 Oak Ave, Springfield, IL 62701",
-        "tracking_number": "1Z999AA1012345676",
-        "carrier": "UPS",
-        "estimated_delivery": "2024-01-25",
-        "ship_date": "2024-01-20"
-    },
-    "ORD-003": {
-        "order_id": "ORD-003",
-        "customer_name": "Mike Davis",
-        "customer_email": "mike.davis@example.com",
-        "order_date": "2024-01-20",
-        "status": "processing",
-        "total_amount": "$299.97",
-        "items": [
-            {"name": "Chrome Battery CB12-100", "quantity": 1, "price": "$199.99"},
-            {"name": "Battery Charger Pro", "quantity": 1, "price": "$99.98"}
-        ],
-        "shipping_address": "789 Pine St, Portland, OR 97201",
-        "estimated_ship_date": "2024-01-23"
-    },
-    "ORD-004": {
-        "order_id": "ORD-004",
-        "customer_name": "Lisa Chen",
-        "customer_email": "lisa.chen@example.com",
-        "order_date": "2024-01-10",
-        "status": "cancelled",
-        "total_amount": "$59.99",
-        "items": [
-            {"name": "Chrome Battery CB6-4.5", "quantity": 1, "price": "$59.99"}
-        ],
-        "cancellation_reason": "Customer requested cancellation",
-        "cancellation_date": "2024-01-12",
-        "refund_status": "processed",
-        "refund_amount": "$59.99"
-    },
-    "ORD-005": {
-        "order_id": "ORD-005",
-        "customer_name": "Robert Wilson",
-        "customer_email": "rob.wilson@example.com",
-        "order_date": "2024-01-22",
-        "status": "pending",
-        "total_amount": "$179.98",
-        "items": [
-            {"name": "Chrome Battery CB12-9", "quantity": 2, "price": "$89.99"}
-        ],
-        "shipping_address": "321 Elm St, Austin, TX 73301",
-        "payment_status": "pending_verification"
-    }
-}
+# Helper functions for data formatting and retrieval
+
+def format_date(date_value: Any) -> str:
+    """Format a date value from database to readable string."""
+    if not date_value:
+        return "Not available"
+
+    try:
+        if isinstance(date_value, str):
+            # Parse ISO format date
+            dt = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+            return dt.strftime("%B %d, %Y")
+        elif isinstance(date_value, datetime):
+            return date_value.strftime("%B %d, %Y")
+        else:
+            return str(date_value)
+    except Exception as e:
+        logger.warning(f"Error formatting date {date_value}: {e}")
+        return str(date_value)
+
+
+def format_currency(amount: Any) -> str:
+    """Format a currency amount from database."""
+    if amount is None:
+        return "$0.00"
+
+    try:
+        return f"${float(amount):.2f}"
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Error formatting currency {amount}: {e}")
+        return str(amount)
+
+
+def get_order_by_id(order_identifier: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up an order by OrderNumberComplete or email address.
+
+    Args:
+        order_identifier: Either an order number (OrderNumberComplete) or email address
+
+    Returns:
+        Order record dict or None if not found
+    """
+    try:
+        # First try as order number
+        orders = query_orders_table("OrderNumberComplete", order_identifier)
+
+        if orders and len(orders) > 0:
+            return orders[0]
+
+        # If not found and looks like an email, try email lookup
+        if "@" in order_identifier:
+            orders = query_orders_table("BillEmail", order_identifier)
+            if orders and len(orders) > 0:
+                # Return most recent order for this email
+                sorted_orders = sorted(
+                    orders,
+                    key=lambda x: x.get("OrderDate", ""),
+                    reverse=True
+                )
+                return sorted_orders[0]
+
+        return None
+
+    except Exception as e:
+        logger.error(f"Error looking up order {order_identifier}: {e}")
+        return None
+
+
+def get_orders_by_email(email: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Get all orders for a customer email.
+
+    Args:
+        email: Customer email address
+        limit: Maximum number of orders to return
+
+    Returns:
+        List of order records, sorted by date (most recent first)
+    """
+    try:
+        orders = query_orders_table("BillEmail", email)
+
+        if not orders:
+            return []
+
+        # Sort by OrderDate, most recent first
+        sorted_orders = sorted(
+            orders,
+            key=lambda x: x.get("OrderDate", ""),
+            reverse=True
+        )
+
+        return sorted_orders[:limit]
+
+    except Exception as e:
+        logger.error(f"Error getting orders for email {email}: {e}")
+        return []
 
 
 @tool
 def lookup_order(order_id: str) -> str:
     """
-    Look up comprehensive order details by order ID.
+    Look up comprehensive order details by order number or email address.
 
     This tool retrieves complete order information including customer details,
-    items, pricing, shipping information, and current status.
+    pricing, shipping information, tracking, and current status from the Supabase database.
 
     Args:
-        order_id: The order ID to look up (e.g., "ORD-001", "ORD-002")
+        order_id: The order number (e.g., "12345") or customer email address
 
     Returns:
         Complete order details or error message if order not found
@@ -109,61 +137,123 @@ def lookup_order(order_id: str) -> str:
     try:
         logger.info(f"Looking up order: {order_id}")
 
-        # Normalize order ID
-        order_id = order_id.strip().upper()
+        # Normalize input
+        order_identifier = order_id.strip()
 
-        if order_id in TEST_ORDERS:
-            order = TEST_ORDERS[order_id]
+        # Check if it's an email (multiple orders) or single order lookup
+        if "@" in order_identifier:
+            # Email lookup - get all orders for this customer
+            orders = get_orders_by_email(order_identifier, limit=5)
 
-            # Format order details for customer display
-            details = []
-            details.append(f"Order ID: {order['order_id']}")
-            details.append(f"Order Date: {order['order_date']}")
-            details.append(f"Status: {order['status'].title()}")
-            details.append(f"Total Amount: {order['total_amount']}")
+            if not orders:
+                return f"No orders found for email {order_identifier}. Please verify the email address and try again."
 
-            # Add items
-            details.append("\nItems Ordered:")
-            for item in order['items']:
-                details.append(f"- {item['name']} (Qty: {item['quantity']}) - {item['price']}")
+            # Format summary of all orders
+            details = [f"Found {len(orders)} order(s) for {order_identifier}:\n"]
 
-            # Add shipping information
-            if 'shipping_address' in order:
-                details.append(f"\nShipping Address: {order['shipping_address']}")
+            for idx, order in enumerate(orders, 1):
+                order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+                order_date = format_date(order.get("OrderDate"))
+                total = format_currency(order.get("OrderTotal"))
+                status = order.get("OnlineStatus", "Unknown")
 
-            # Status-specific information
-            if order['status'] == 'delivered':
-                if 'actual_delivery' in order:
-                    details.append(f"Delivered On: {order['actual_delivery']}")
-                if 'tracking_number' in order:
-                    details.append(f"Tracking Number: {order['tracking_number']}")
+                details.append(f"{idx}. Order #{order_num}")
+                details.append(f"   Date: {order_date}")
+                details.append(f"   Total: {total}")
+                details.append(f"   Status: {status}")
+                details.append("")
 
-            elif order['status'] == 'shipped':
-                if 'tracking_number' in order:
-                    details.append(f"Tracking Number: {order['tracking_number']}")
-                if 'estimated_delivery' in order:
-                    details.append(f"Expected Delivery: {order['estimated_delivery']}")
-                if 'ship_date' in order:
-                    details.append(f"Ship Date: {order['ship_date']}")
-
-            elif order['status'] == 'processing':
-                if 'estimated_ship_date' in order:
-                    details.append(f"Expected Ship Date: {order['estimated_ship_date']}")
-
-            elif order['status'] == 'cancelled':
-                details.append(f"Cancellation Date: {order['cancellation_date']}")
-                details.append(f"Reason: {order['cancellation_reason']}")
-                if 'refund_status' in order:
-                    details.append(f"Refund Status: {order['refund_status'].title()}")
-                    details.append(f"Refund Amount: {order['refund_amount']}")
-
-            elif order['status'] == 'pending':
-                if 'payment_status' in order:
-                    details.append(f"Payment Status: {order['payment_status'].replace('_', ' ').title()}")
-
+            details.append("To get more details about a specific order, please provide the order number.")
             return "\n".join(details)
-        else:
-            return f"Order {order_id} not found. Please verify the order ID and try again. If you continue to have issues, please contact customer support."
+
+        # Single order lookup
+        order = get_order_by_id(order_identifier)
+
+        if not order:
+            return f"Order {order_identifier} not found. Please verify the order number and try again. If you continue to have issues, please contact customer support."
+
+        # Format order details for customer display
+        details = []
+
+        # Basic order information
+        order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+        details.append(f"Order Number: {order_num}")
+        details.append(f"Order Date: {format_date(order.get('OrderDate'))}")
+
+        # Customer information
+        customer_name = f"{order.get('BillFirstName', '')} {order.get('BillLastName', '')}".strip()
+        if customer_name:
+            details.append(f"Customer: {customer_name}")
+        if order.get("BillEmail"):
+            details.append(f"Email: {order.get('BillEmail')}")
+
+        # Order status and amount
+        status = order.get("OnlineStatus", "Unknown")
+        details.append(f"Status: {status}")
+        details.append(f"Total Amount: {format_currency(order.get('OrderTotal'))}")
+
+        # Item count (no line items per requirements)
+        item_count = order.get("RollupItemCount")
+        if item_count:
+            details.append(f"Number of Items: {item_count}")
+
+        # Shipping address
+        ship_name = f"{order.get('ShipFirstName', '')} {order.get('ShipLastName', '')}".strip()
+        ship_city = order.get("ShipCity", "")
+        ship_state = order.get("ShipStateProvCode", "")
+        ship_country = order.get("ShipCountryCode", "")
+
+        if ship_name or ship_city:
+            shipping_parts = []
+            if ship_name:
+                shipping_parts.append(ship_name)
+            location_parts = [part for part in [ship_city, ship_state, ship_country] if part]
+            if location_parts:
+                shipping_parts.append(", ".join(location_parts))
+
+            details.append(f"\nShipping Address: {', '.join(shipping_parts)}")
+
+        # Get shipment/tracking information
+        try:
+            order_id_val = order.get("OrderID")
+            if order_id_val:
+                shipments = query_shipments_by_order_id(order_id_val)
+
+                if shipments:
+                    details.append(f"\nShipment Information:")
+                    for idx, shipment in enumerate(shipments, 1):
+                        tracking = shipment.get("TrackingNumber")
+                        carrier = shipment.get("Carrier", "")
+                        service = shipment.get("Service", "")
+                        ship_date = format_date(shipment.get("ShipDate"))
+
+                        if len(shipments) > 1:
+                            details.append(f"\n  Shipment {idx}:")
+                            prefix = "    "
+                        else:
+                            prefix = "  "
+
+                        if tracking:
+                            details.append(f"{prefix}Tracking Number: {tracking}")
+                        if carrier:
+                            carrier_service = f"{carrier}"
+                            if service:
+                                carrier_service += f" - {service}"
+                            details.append(f"{prefix}Carrier: {carrier_service}")
+                        if ship_date != "Not available":
+                            details.append(f"{prefix}Ship Date: {ship_date}")
+                else:
+                    # No shipments yet
+                    if status.lower() in ["shipped", "delivered"]:
+                        details.append(f"\nTracking information is being updated. Please check back shortly.")
+                    else:
+                        details.append(f"\nThis order has not shipped yet.")
+
+        except Exception as e:
+            logger.error(f"Error fetching shipment info: {e}")
+            details.append(f"\nUnable to retrieve shipment information at this time.")
+
+        return "\n".join(details)
 
     except Exception as e:
         logger.error(f"Error looking up order {order_id}: {e}")
@@ -173,12 +263,12 @@ def lookup_order(order_id: str) -> str:
 @tool
 def get_order_status(order_id: str) -> str:
     """
-    Get the current status of an order.
+    Get the current status of an order from the database.
 
     This tool provides quick status information for an order without full details.
 
     Args:
-        order_id: The order ID to check status for
+        order_id: The order number or customer email to check status for
 
     Returns:
         Current order status or error message if order not found
@@ -186,24 +276,57 @@ def get_order_status(order_id: str) -> str:
     try:
         logger.info(f"Getting status for order: {order_id}")
 
-        # Normalize order ID
-        order_id = order_id.strip().upper()
+        # Normalize input
+        order_identifier = order_id.strip()
 
-        if order_id in TEST_ORDERS:
-            order = TEST_ORDERS[order_id]
-            status = order['status']
+        # Look up the order
+        order = get_order_by_id(order_identifier)
 
-            status_messages = {
-                'pending': f"Order {order_id} is pending. We're processing your payment and preparing your order.",
-                'processing': f"Order {order_id} is being processed. Your items are being prepared for shipment.",
-                'shipped': f"Order {order_id} has been shipped! Your tracking number is {order.get('tracking_number', 'not available yet')}.",
-                'delivered': f"Order {order_id} was successfully delivered on {order.get('actual_delivery', 'an earlier date')}.",
-                'cancelled': f"Order {order_id} was cancelled on {order.get('cancellation_date', 'a previous date')}."
-            }
+        if not order:
+            return f"Order {order_identifier} not found. Please check your order number and try again."
 
-            return status_messages.get(status, f"Order {order_id} status: {status.title()}")
-        else:
-            return f"Order {order_id} not found. Please check your order ID and try again."
+        # Extract order information
+        order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+        status = order.get("OnlineStatus", "Unknown")
+        order_date = format_date(order.get("OrderDate"))
+
+        # Build status message
+        message = f"Order {order_num} (placed {order_date})\nStatus: {status}"
+
+        # Try to get shipment information for additional context
+        try:
+            order_id_val = order.get("OrderID")
+            if order_id_val:
+                shipments = query_shipments_by_order_id(order_id_val)
+
+                if shipments:
+                    # Add tracking information if available
+                    tracking_numbers = [
+                        s.get("TrackingNumber")
+                        for s in shipments
+                        if s.get("TrackingNumber")
+                    ]
+
+                    if tracking_numbers:
+                        if len(tracking_numbers) == 1:
+                            message += f"\nTracking: {tracking_numbers[0]}"
+                        else:
+                            message += f"\nTracking numbers: {', '.join(tracking_numbers)}"
+
+                        # Get most recent ship date
+                        ship_dates = [
+                            s.get("ShipDate")
+                            for s in shipments
+                            if s.get("ShipDate")
+                        ]
+                        if ship_dates:
+                            latest_ship_date = max(ship_dates)
+                            message += f"\nLast shipped: {format_date(latest_ship_date)}"
+
+        except Exception as e:
+            logger.warning(f"Could not fetch shipment info for status check: {e}")
+
+        return message
 
     except Exception as e:
         logger.error(f"Error getting status for order {order_id}: {e}")
@@ -213,13 +336,13 @@ def get_order_status(order_id: str) -> str:
 @tool
 def get_tracking_number(order_id: str) -> str:
     """
-    Get tracking information for a shipped order.
+    Get tracking information for a shipped order from the database.
 
-    This tool provides tracking numbers and carrier information for orders
-    that have been shipped.
+    This tool provides all tracking numbers and carrier information for orders
+    that have been shipped. An order may have multiple shipments.
 
     Args:
-        order_id: The order ID to get tracking information for
+        order_id: The order number to get tracking information for
 
     Returns:
         Tracking information or appropriate message based on order status
@@ -227,45 +350,64 @@ def get_tracking_number(order_id: str) -> str:
     try:
         logger.info(f"Getting tracking info for order: {order_id}")
 
-        # Normalize order ID
-        order_id = order_id.strip().upper()
+        # Normalize input
+        order_identifier = order_id.strip()
 
-        if order_id in TEST_ORDERS:
-            order = TEST_ORDERS[order_id]
-            status = order['status']
+        # Look up the order
+        order = get_order_by_id(order_identifier)
 
-            if status in ['shipped', 'delivered']:
-                tracking_num = order.get('tracking_number')
-                carrier = order.get('carrier', 'the carrier')
+        if not order:
+            return f"Order {order_identifier} not found. Please verify your order number and try again."
 
-                if tracking_num:
-                    result = f"Order {order_id} tracking number: {tracking_num}"
-                    if carrier:
-                        result += f" (Carrier: {carrier})"
+        order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+        status = order.get("OnlineStatus", "Unknown")
 
-                    if status == 'delivered':
-                        result += f"\n\nThis order was delivered on {order.get('actual_delivery', 'an earlier date')}."
-                    elif 'estimated_delivery' in order:
-                        result += f"\n\nEstimated delivery: {order['estimated_delivery']}"
+        # Get shipments for this order
+        order_id_val = order.get("OrderID")
+        if not order_id_val:
+            return f"Order {order_num}: Unable to retrieve tracking information at this time."
 
-                    return result
-                else:
-                    return f"Order {order_id} has been shipped but tracking information is not yet available. Please check back in a few hours."
+        shipments = query_shipments_by_order_id(order_id_val)
 
-            elif status == 'processing':
-                ship_date = order.get('estimated_ship_date', 'soon')
-                return f"Order {order_id} is still being processed and hasn't shipped yet. Expected ship date: {ship_date}. Tracking information will be available once the order ships."
+        if not shipments:
+            # No shipments found
+            return f"Order {order_num} (Status: {status})\n\nThis order has not shipped yet. Tracking information will be available once your order ships."
 
-            elif status == 'pending':
-                return f"Order {order_id} is still pending and hasn't shipped yet. We'll provide tracking information once your order ships."
+        # Format tracking information for all shipments
+        result = [f"Order {order_num} - Tracking Information:\n"]
 
-            elif status == 'cancelled':
-                return f"Order {order_id} was cancelled and no shipment was made."
+        for idx, shipment in enumerate(shipments, 1):
+            tracking = shipment.get("TrackingNumber")
+            carrier = shipment.get("Carrier", "")
+            service = shipment.get("Service", "")
+            ship_date = format_date(shipment.get("ShipDate"))
 
+            if len(shipments) > 1:
+                result.append(f"Shipment {idx}:")
+
+            if tracking:
+                result.append(f"  Tracking Number: {tracking}")
             else:
-                return f"Order {order_id} status is {status}. Tracking information is not applicable for this status."
-        else:
-            return f"Order {order_id} not found. Please verify your order ID and try again."
+                result.append(f"  Tracking Number: Not yet available")
+
+            if carrier:
+                carrier_info = carrier
+                if service:
+                    carrier_info += f" - {service}"
+                result.append(f"  Carrier: {carrier_info}")
+
+            if ship_date != "Not available":
+                result.append(f"  Ship Date: {ship_date}")
+
+            if idx < len(shipments):
+                result.append("")  # Add blank line between shipments
+
+        # Add helpful context based on tracking availability
+        has_tracking = any(s.get("TrackingNumber") for s in shipments)
+        if not has_tracking:
+            result.append("\nNote: Tracking numbers are typically available within a few hours of shipment. Please check back shortly.")
+
+        return "\n".join(result)
 
     except Exception as e:
         logger.error(f"Error getting tracking for order {order_id}: {e}")
