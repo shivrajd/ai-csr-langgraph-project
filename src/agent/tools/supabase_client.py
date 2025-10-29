@@ -168,3 +168,27 @@ def query_shipments_by_order_id(order_id: int) -> list:
     except Exception as e:
         logger.error(f"❌ Error querying shipments table: {e}")
         raise
+
+
+def query_order_items_by_order_id(order_id: int) -> list:
+    """Query all order items for a given order ID.
+
+    Args:
+        order_id: The OrderID to look up items for
+
+    Returns:
+        List of matching order item records with product details
+    """
+    try:
+        client = get_supabase_client()
+        response = (
+            client.table("shipworks_order_item")
+            .select("OrderItemID, OrderID, Name, SKU, Quantity, UnitPrice, Description, Weight")
+            .eq("OrderID", order_id)
+            .order("OrderItemID")
+            .execute()
+        )
+        return response.data
+    except Exception as e:
+        logger.error(f"❌ Error querying order items table: {e}")
+        raise

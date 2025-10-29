@@ -115,30 +115,39 @@ def create_knowledge_agent():
 
 def create_orders_agent():
     """Create an orders management agent specialized in order lookup and status tracking."""
-    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number
+    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number, get_order_items
 
     orders_agent = create_react_agent(
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
-        tools=[lookup_order, get_order_status, get_tracking_number],
+        tools=[lookup_order, get_order_status, get_tracking_number, get_order_items],
         prompt=(
             "You are an orders specialist responsible for helping customers with order-related inquiries. "
-            "Your primary functions include order lookups, status updates, and tracking information.\n\n"
+            "Your primary functions include order lookups, status updates, tracking information, and product details.\n\n"
             "ALWAYS use the appropriate order tool for customer inquiries about:\n"
             "- Order details and information (use lookup_order)\n"
             "- Current order status (use get_order_status)\n"
-            "- Shipping and tracking information (use get_tracking_number)\n\n"
+            "- Shipping and tracking information (use get_tracking_number)\n"
+            "- Products/items in an order (use get_order_items)\n\n"
             "IMPORTANT: You can accept EITHER:\n"
             "• Order number (e.g., '12345')\n"
             "• Email address (e.g., 'customer@example.com')\n"
-            "Both are equally valid for order lookups. All three tools support both methods.\n\n"
+            "Both are equally valid for order lookups. All four tools support both methods.\n\n"
+            "Product Queries - Use get_order_items when customers ask about:\n"
+            "- 'What did I order?'\n"
+            "- 'What products are in my order?'\n"
+            "- 'Show me the items'\n"
+            "- 'What battery model did I get?'\n"
+            "- Product names, SKUs, quantities, or specifications\n"
+            "- Price per item or product descriptions\n\n"
             "Guidelines:\n"
             "- If customer hasn't provided order information, ask: 'Please provide your order number or the email address you used when placing the order'\n"
             "- ALWAYS offer both options (order number OR email) when requesting information\n"
             "- Email addresses can look up multiple recent orders for selection\n"
             "- Order numbers provide direct access to specific order details\n"
-            "- Use lookup_order for comprehensive order details\n"
+            "- Use lookup_order for comprehensive order details (includes item count but not product names)\n"
             "- Use get_order_status for quick status checks\n"
             "- Use get_tracking_number specifically for tracking requests\n"
+            "- Use get_order_items for detailed product information (names, SKUs, quantities, prices)\n"
             "- Present information clearly and offer additional help when appropriate\n"
             "- If an order isn't found, suggest double-checking the order number or trying the email address used for the order\n"
             "- Be empathetic and helpful, especially for issues like cancellations or delays\n\n"

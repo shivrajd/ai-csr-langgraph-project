@@ -16,7 +16,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import Supabase client utilities
-from src.agent.tools.supabase_client import get_supabase_client, query_orders_table, query_shipments_by_order_id
+from src.agent.tools.supabase_client import (
+    get_supabase_client,
+    query_orders_table,
+    query_shipments_by_order_id,
+    query_order_items_by_order_id
+)
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +419,129 @@ def get_tracking_number(order_id: str) -> str:
         return "I'm having trouble retrieving tracking information right now. Please try again in a moment."
 
 
-# List of available tools for the orders agent
-available_tools = [lookup_order, get_order_status, get_tracking_number]
+@tool
+def get_order_items(order_id: str) -> str:
+    """
+    Get detailed product information for items in an order.
 
-__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "available_tools"]
+    This tool retrieves the list of products/items that were ordered, including
+    product names, SKUs, quantities, prices, and descriptions. Use this when customers
+    ask about what products are in their order, what they ordered, battery models,
+    or specific product details.
+
+    Args:
+        order_id: The order number (e.g., "12345") or customer email address
+
+    Returns:
+        Detailed list of products in the order(s) or error message if not found
+    """
+    try:
+        logger.info(f"Getting order items for: {order_id}")
+
+        # Normalize input
+        order_identifier = order_id.strip()
+
+        # Check if it's an email (multiple orders) or single order lookup
+        if "@" in order_identifier:
+            # Email lookup - get all orders for this customer
+            orders = get_orders_by_email(order_identifier, limit=10)
+
+            if not orders:
+                return f"No orders found for email {order_identifier}. Please verify the email address and try again."
+
+            # Collect items from all orders
+            all_items_details = []
+            all_items_details.append(f"Products ordered by {order_identifier}:\n")
+
+            for order in orders:
+                order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+                order_date = format_date(order.get("OrderDate"))
+                order_id_val = order.get("OrderID")
+
+                if not order_id_val:
+                    continue
+
+                # Get items for this order
+                items = query_order_items_by_order_id(order_id_val)
+
+                if items:
+                    all_items_details.append(f"\nOrder #{order_num} ({order_date}):")
+                    for idx, item in enumerate(items, 1):
+                        item_name = item.get("Name", "Unknown Product")
+                        sku = item.get("SKU", "")
+                        quantity = item.get("Quantity", 0)
+                        unit_price = item.get("UnitPrice", 0)
+                        description = item.get("Description", "").strip()
+
+                        all_items_details.append(f"\n{idx}. {item_name}")
+                        if sku:
+                            all_items_details.append(f"   SKU: {sku}")
+                        all_items_details.append(f"   Quantity: {int(float(quantity))}")
+                        all_items_details.append(f"   Price: {format_currency(unit_price)} each")
+                        if description:
+                            all_items_details.append(f"   Description: {description}")
+
+            if len(all_items_details) == 1:  # Only the header was added
+                return f"No items found in orders for {order_identifier}."
+
+            return "\n".join(all_items_details)
+
+        # Single order lookup
+        order = get_order_by_id(order_identifier)
+
+        if not order:
+            return f"Order {order_identifier} not found. Please verify the order number and try again."
+
+        order_id_val = order.get("OrderID")
+        if not order_id_val:
+            return f"Unable to retrieve items for order {order_identifier}."
+
+        # Get items for this order
+        items = query_order_items_by_order_id(order_id_val)
+
+        if not items:
+            return f"No items found in order {order_identifier}. This may indicate a data sync issue."
+
+        # Format item details
+        order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+        details = []
+        details.append(f"Order #{order_num} contains {len(items)} item(s):\n")
+
+        for idx, item in enumerate(items, 1):
+            item_name = item.get("Name", "Unknown Product")
+            sku = item.get("SKU", "")
+            quantity = item.get("Quantity", 0)
+            unit_price = item.get("UnitPrice", 0)
+            description = item.get("Description", "").strip()
+            weight = item.get("Weight")
+
+            details.append(f"{idx}. {item_name}")
+            if sku:
+                details.append(f"   SKU: {sku}")
+            details.append(f"   Quantity: {int(float(quantity))}")
+            details.append(f"   Price: {format_currency(unit_price)} each")
+            if description:
+                details.append(f"   Description: {description}")
+            if weight:
+                try:
+                    weight_val = float(weight)
+                    if weight_val > 0:
+                        details.append(f"   Weight: {weight_val} lbs")
+                except (ValueError, TypeError):
+                    pass
+
+            # Add spacing between items (except after last item)
+            if idx < len(items):
+                details.append("")
+
+        return "\n".join(details)
+
+    except Exception as e:
+        logger.error(f"Error getting order items for {order_id}: {e}")
+        return "I'm having trouble retrieving product information right now. Please try again in a moment."
+
+
+# List of available tools for the orders agent
+available_tools = [lookup_order, get_order_status, get_tracking_number, get_order_items]
+
+__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "get_order_items", "available_tools"]
