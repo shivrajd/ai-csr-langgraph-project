@@ -33,54 +33,7 @@ class Context(TypedDict):
 
 
 # Define tools for the agents
-@tool
-def web_search(query: str) -> str:
-    """Search the web for information."""
-    # Mock implementation for testing
-    return f"Here are the search results for '{query}': Mock research data about {query}. This would normally return real web search results."
-
-
-@tool
-def add(a: float, b: float) -> float:
-    """Add two numbers."""
-    return a + b
-
-
-@tool
-def multiply(a: float, b: float) -> float:
-    """Multiply two numbers."""
-    return a * b
-
-
-def create_research_agent():
-    """Create a research agent specialized in web search and information gathering."""
-    research_agent = create_react_agent(
-        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
-        tools=[web_search],
-        prompt=(
-            "You are a research specialist. Your role is to search for information "
-            "and provide comprehensive answers based on your findings. "
-            "Use the web_search tool to gather relevant information when needed. "
-            "Be thorough and accurate in your research."
-        ),
-        name="research_agent"
-    )
-    return research_agent
-
-
-def create_math_agent():
-    """Create a math agent specialized in mathematical calculations."""
-    math_agent = create_react_agent(
-        model=init_chat_model("openai:gpt-4o-mini", temperature=0.1),
-        tools=[add, multiply],
-        prompt=(
-            "You are a math specialist. Your role is to help with mathematical "
-            "calculations and problem solving. Use the available tools for "
-            "computations when needed. Be precise and clear in your explanations."
-        ),
-        name="math_agent"
-    )
-    return math_agent
+# (Test agent tools removed - only production agents remain)
 
 
 def create_knowledge_agent():
@@ -156,40 +109,6 @@ def create_orders_agent():
         name="orders_agent"
     )
     return orders_agent
-
-
-def create_warranty_agent():
-    """Create a warranty agent specialized in warranty checking and policy information."""
-    from src.agent.tools.warranty_tools import check_warranty, get_warranty_policy
-
-    warranty_agent = create_react_agent(
-        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
-        tools=[check_warranty, get_warranty_policy],
-        prompt=(
-            "You are a warranty specialist responsible for helping customers with warranty-related inquiries. "
-            "Your primary functions include checking warranty status and providing warranty policy information.\n\n"
-            "ALWAYS use the appropriate warranty tool for customer inquiries about:\n"
-            "- Warranty status for specific orders (use check_warranty)\n"
-            "- General warranty policy information (use get_warranty_policy)\n"
-            "- Warranty coverage details and timelines\n"
-            "- Warranty claims and procedures\n\n"
-            "Guidelines:\n"
-            "- Ask for the order ID when checking warranty status\n"
-            "- Use check_warranty to get detailed warranty information for specific orders\n"
-            "- Use get_warranty_policy for general warranty information\n"
-            "- Explain warranty coverage clearly, including timelines and what's covered\n"
-            "- Be helpful in explaining warranty options and next steps\n"
-            "- If warranty has expired, still offer to help and suggest contacting support\n"
-            "- Provide clear information about warranty periods (180 days full, 365 days limited)\n\n"
-            "Key warranty periods:\n"
-            "- Full warranty: First 180 days (complete coverage)\n"
-            "- Limited warranty: 181-365 days (manufacturing defects only)\n"
-            "- Out of warranty: After 365 days\n\n"
-            "Be empathetic, clear, and always use the specific tools available to provide accurate warranty information."
-        ),
-        name="warranty_agent"
-    )
-    return warranty_agent
 
 
 def create_products_agent():
@@ -330,23 +249,20 @@ def create_handoff_agent():
 
 
 def create_agent_supervisor():
-    """Create a supervisor to manage research, math, knowledge, orders, warranty, warranty_returns, products, and handoff agents."""
+    """Create a supervisor to manage knowledge, orders, warranty_returns, products, and handoff agents."""
     # Create the specialized agents
-    research_agent = create_research_agent()
-    math_agent = create_math_agent()
     knowledge_agent = create_knowledge_agent()
     orders_agent = create_orders_agent()
-    warranty_agent = create_warranty_agent()
     warranty_returns_agent = create_warranty_returns_agent()
     products_agent = create_products_agent()
     handoff_agent = create_handoff_agent()
 
     # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        [research_agent, math_agent, knowledge_agent, orders_agent, warranty_agent, warranty_returns_agent, products_agent, handoff_agent],  # Pass agents as first positional argument
+        [knowledge_agent, orders_agent, warranty_returns_agent, products_agent, handoff_agent],  # Pass agents as first positional argument
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing eight specialized agents:\n\n"
+            "You are a supervisor managing five specialized agents:\n\n"
             "- **handoff_agent**: For bot-to-human escalations. Use when customer:\n"
             "  • Explicitly asks for human agent ('speak to human', 'talk to a real person')\n"
             "  • Shows frustration or anger ('frustrated', 'useless bot', 'not helping')\n"
@@ -357,37 +273,29 @@ def create_agent_supervisor():
             "tracking information, and any questions about specific customer orders. "
             "PRIORITIZE this agent for order-related questions, INCLUDING questions about how to look up orders "
             "(whether to use email or order number).\n\n"
-            "- **warranty_agent**: For BASIC warranty inquiries using the generic warranty system "
-            "(180-day full warranty, 365-day limited warranty). This is a legacy agent. "
-            "IMPORTANT: For brand-specific warranty checks or RMA tracking, use warranty_returns_agent instead.\n\n"
-            "- **warranty_returns_agent**: For COMPREHENSIVE warranty and returns management including:\n"
+            "- **warranty_returns_agent**: For ALL warranty and returns management including:\n"
             "  • Brand-specific warranty eligibility checks (ZB, PB, PRO, BT brands)\n"
             "  • Warranty period calculations with refund vs replacement windows\n"
             "  • RMA (Return Merchandise Authorization) status tracking\n"
             "  • Return/replacement request lookups\n"
             "  • Return shipping and tracking information\n"
             "  • Warranty policy information by brand\n"
-            "  PRIORITIZE this agent for all warranty/returns questions requiring detailed tracking or brand-specific information.\n\n"
+            "  • General warranty inquiries and policy questions\n"
+            "  USE this agent for ALL warranty and returns questions - it provides comprehensive coverage.\n\n"
             "- **products_agent**: For product-specific inquiries including product search, specifications, "
             "comparisons, stock availability, and product recommendations. Use this agent for questions "
             "about product features, pricing, availability, technical specifications, and product selection.\n\n"
-            "- **knowledge_agent**: For general company policies, shipping/returns, FAQ content, "
+            "- **knowledge_agent**: For general company policies, shipping procedures, FAQ content, "
             "general procedures, and help topics requiring knowledge base lookup. Use for policy and "
             "general questions but NOT for specific product, order, or warranty inquiries.\n\n"
-            "- **research_agent**: For web searches and general research tasks that require "
-            "external information not in the knowledge base.\n\n"
-            "- **math_agent**: For mathematical calculations and problem solving.\n\n"
             "Routing Strategy (IN ORDER OF PRIORITY):\n"
             "1. FIRST: Check for genuine escalation needs → handoff_agent (explicit human requests, frustration, anger, complaints)\n"
             "   NOTE: Questions about order lookup methods (email/order number) are NOT escalations\n"
             "2. For specific order inquiries (lookup, status, tracking, lookup methods) → orders_agent\n"
-            "3. For warranty & returns inquiries with brand-specific needs or RMA tracking → warranty_returns_agent\n"
-            "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility')\n"
-            "4. For basic warranty inquiries without brand/RMA specifics → warranty_agent (legacy)\n"
-            "5. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
-            "6. For general company policies, FAQs, and procedures → knowledge_agent\n"
-            "7. For general research or web search needs → research_agent\n"
-            "8. For calculations or mathematical problems → math_agent\n\n"
+            "3. For ALL warranty & returns inquiries → warranty_returns_agent\n"
+            "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility', 'Warranty policy')\n"
+            "4. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
+            "5. For general company policies, FAQs, and procedures → knowledge_agent\n\n"
             "CRITICAL BRAND LOYALTY REQUIREMENT:\n"
             "NEVER suggest competitors, alternative suppliers, or other companies under any circumstances. "
             "If you cannot find specific information or products, always:\n"
