@@ -8,7 +8,7 @@ tables (shipworks_order and shipworks_shipment).
 import logging
 import os
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from langchain_core.tools import tool
 
 # Load environment variables if not already loaded
@@ -126,7 +126,7 @@ def get_orders_by_email(email: str, limit: int = 5) -> List[Dict[str, Any]]:
 
 
 @tool
-def lookup_order(order_id: str) -> str:
+def lookup_order(order_id: Union[str, int]) -> str:
     """
     Look up comprehensive order details by order number or email address.
 
@@ -134,7 +134,7 @@ def lookup_order(order_id: str) -> str:
     pricing, shipping information, tracking, and current status from the Supabase database.
 
     Args:
-        order_id: The order number (e.g., "12345") or customer email address
+        order_id: The order number (e.g., "12345" or 12345) or customer email address
 
     Returns:
         Complete order details or error message if order not found
@@ -142,8 +142,8 @@ def lookup_order(order_id: str) -> str:
     try:
         logger.info(f"Looking up order: {order_id}")
 
-        # Normalize input
-        order_identifier = order_id.strip()
+        # Normalize input - CRITICAL: Ensure string type (LangGraph may pass integers)
+        order_identifier = str(order_id).strip()
 
         # Check if it's an email (multiple orders) or single order lookup
         if "@" in order_identifier:
@@ -266,14 +266,14 @@ def lookup_order(order_id: str) -> str:
 
 
 @tool
-def get_order_status(order_id: str) -> str:
+def get_order_status(order_id: Union[str, int]) -> str:
     """
     Get the current status of an order from the database.
 
     This tool provides quick status information for an order without full details.
 
     Args:
-        order_id: The order number or customer email to check status for
+        order_id: The order number (string or integer) or customer email to check status for
 
     Returns:
         Current order status or error message if order not found
@@ -281,8 +281,8 @@ def get_order_status(order_id: str) -> str:
     try:
         logger.info(f"Getting status for order: {order_id}")
 
-        # Normalize input
-        order_identifier = order_id.strip()
+        # Normalize input - CRITICAL: Ensure string type (LangGraph may pass integers)
+        order_identifier = str(order_id).strip()
 
         # Look up the order
         order = get_order_by_id(order_identifier)
@@ -339,7 +339,7 @@ def get_order_status(order_id: str) -> str:
 
 
 @tool
-def get_tracking_number(order_id: str) -> str:
+def get_tracking_number(order_id: Union[str, int]) -> str:
     """
     Get tracking information for a shipped order from the database.
 
@@ -347,7 +347,7 @@ def get_tracking_number(order_id: str) -> str:
     that have been shipped. An order may have multiple shipments.
 
     Args:
-        order_id: The order number or email address to get tracking information for
+        order_id: The order number (string or integer) or email address to get tracking information for
 
     Returns:
         Tracking information or appropriate message based on order status
@@ -355,8 +355,8 @@ def get_tracking_number(order_id: str) -> str:
     try:
         logger.info(f"Getting tracking info for order: {order_id}")
 
-        # Normalize input
-        order_identifier = order_id.strip()
+        # Normalize input - CRITICAL: Ensure string type (LangGraph may pass integers)
+        order_identifier = str(order_id).strip()
 
         # Look up the order
         order = get_order_by_id(order_identifier)
@@ -420,7 +420,7 @@ def get_tracking_number(order_id: str) -> str:
 
 
 @tool
-def get_order_items(order_id: str) -> str:
+def get_order_items(order_id: Union[str, int]) -> str:
     """
     Get detailed product information for items in an order.
 
@@ -430,7 +430,7 @@ def get_order_items(order_id: str) -> str:
     or specific product details.
 
     Args:
-        order_id: The order number (e.g., "12345") or customer email address
+        order_id: The order number (e.g., "12345" or 12345) or customer email address
 
     Returns:
         Detailed list of products in the order(s) or error message if not found
@@ -438,8 +438,8 @@ def get_order_items(order_id: str) -> str:
     try:
         logger.info(f"Getting order items for: {order_id}")
 
-        # Normalize input
-        order_identifier = order_id.strip()
+        # Normalize input - CRITICAL: Ensure string type (LangGraph may pass integers)
+        order_identifier = str(order_id).strip()
 
         # Check if it's an email (multiple orders) or single order lookup
         if "@" in order_identifier:

@@ -136,7 +136,7 @@ def query_orders_table(
         response = (
             client.table("shipworks_order")
             .select(select_fields)
-            .eq(filter_field, filter_value)
+            .eq(filter_field, str(filter_value))  # Explicit string cast for type safety
             .execute()
         )
         return response.data
