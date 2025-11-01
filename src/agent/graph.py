@@ -227,6 +227,71 @@ def create_products_agent():
     return products_agent
 
 
+def create_warranty_returns_agent():
+    """Create a warranty returns agent specialized in warranty checking and RMA tracking."""
+    from src.agent.tools.warranty_returns_tools import (
+        check_product_warranty_status,
+        lookup_rma_by_order,
+        lookup_rma_by_email,
+        get_rma_status,
+        get_brand_warranty_info
+    )
+
+    warranty_returns_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
+        tools=[
+            check_product_warranty_status,
+            lookup_rma_by_order,
+            lookup_rma_by_email,
+            get_rma_status,
+            get_brand_warranty_info
+        ],
+        prompt=(
+            "You are a warranty and returns specialist responsible for helping customers with comprehensive "
+            "warranty status checks and return/replacement tracking. You have access to both warranty eligibility "
+            "checking and RMA (Return Merchandise Authorization) status tracking systems.\n\n"
+            "**Available Tools:**\n\n"
+            "**For Warranty Checking:**\n"
+            "- check_product_warranty_status(order_number) - Check if products are within warranty period. "
+            "This tool automatically retrieves order details and calculates warranty eligibility based on brand-specific policies.\n\n"
+            "**For RMA Tracking:**\n"
+            "- lookup_rma_by_order(order_number) - Find RMA records by order number\n"
+            "- lookup_rma_by_email(email) - Find RMA records by customer email\n"
+            "- get_rma_status(rma_number) - Get detailed RMA status by RMA number\n\n"
+            "**For Policy Information:**\n"
+            "- get_brand_warranty_info(brand) - Get warranty periods for specific brand (ZB, PB, PRO, BT) or 'all'\n\n"
+            "**Brand-Specific Warranty Periods:**\n"
+            "Our warranty coverage varies by product brand (determined by SKU prefix):\n"
+            "- Standard (ZB-): 30-day refund, 365-day replacement\n"
+            "- Performance (PB-): 45-day refund, 365-day replacement\n"
+            "- Professional (PRO-): 75-day refund, 732-day replacement (2 years)\n"
+            "- Bluetooth (BT-): 90-day refund, 732-day replacement (2 years)\n"
+            "- Default (other): 60-day refund, 549-day replacement\n\n"
+            "**Customer Interaction Guidelines:**\n"
+            "- If customer hasn't provided order information, ask for their order number OR email address\n"
+            "- Clearly explain warranty windows (refund period vs replacement period)\n"
+            "- For expired warranties, be empathetic and suggest contacting support for options\n"
+            "- For active RMAs, provide clear status updates including tracking information\n"
+            "- Explain next steps clearly (how to initiate returns, what to expect, timelines)\n"
+            "- If no RMA exists but warranty is valid, guide customer on how to initiate a return\n"
+            "- Be specific about approval status, return shipping labels, and resolution outcomes\n\n"
+            "**RMA Status Information:**\n"
+            "When presenting RMA information, always include:\n"
+            "- RMA authorization number\n"
+            "- Return type (refund or replacement)\n"
+            "- Approval status (approved, pending, denied)\n"
+            "- Return tracking numbers (if available)\n"
+            "- Return label status (sent or not sent)\n"
+            "- Resolution/action taken (if completed)\n"
+            "- Important dates (RMA created, return received, resolution date)\n\n"
+            "Be accurate, empathetic, and helpful. Focus on helping customers understand their warranty status "
+            "and guiding them through the returns process when applicable."
+        ),
+        name="warranty_returns_agent"
+    )
+    return warranty_returns_agent
+
+
 def create_handoff_agent():
     """Create a handoff agent specialized in bot-to-human escalation."""
     from src.agent.tools.handoff_tools import detect_escalation_need, request_human_handoff
@@ -265,22 +330,23 @@ def create_handoff_agent():
 
 
 def create_agent_supervisor():
-    """Create a supervisor to manage research, math, knowledge, orders, warranty, products, and handoff agents."""
+    """Create a supervisor to manage research, math, knowledge, orders, warranty, warranty_returns, products, and handoff agents."""
     # Create the specialized agents
     research_agent = create_research_agent()
     math_agent = create_math_agent()
     knowledge_agent = create_knowledge_agent()
     orders_agent = create_orders_agent()
     warranty_agent = create_warranty_agent()
+    warranty_returns_agent = create_warranty_returns_agent()
     products_agent = create_products_agent()
     handoff_agent = create_handoff_agent()
 
     # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        [research_agent, math_agent, knowledge_agent, orders_agent, warranty_agent, products_agent, handoff_agent],  # Pass agents as first positional argument
+        [research_agent, math_agent, knowledge_agent, orders_agent, warranty_agent, warranty_returns_agent, products_agent, handoff_agent],  # Pass agents as first positional argument
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing seven specialized agents:\n\n"
+            "You are a supervisor managing eight specialized agents:\n\n"
             "- **handoff_agent**: For bot-to-human escalations. Use when customer:\n"
             "  • Explicitly asks for human agent ('speak to human', 'talk to a real person')\n"
             "  • Shows frustration or anger ('frustrated', 'useless bot', 'not helping')\n"
@@ -291,9 +357,17 @@ def create_agent_supervisor():
             "tracking information, and any questions about specific customer orders. "
             "PRIORITIZE this agent for order-related questions, INCLUDING questions about how to look up orders "
             "(whether to use email or order number).\n\n"
-            "- **warranty_agent**: For warranty-related inquiries including warranty status checks, "
-            "warranty policy information, warranty coverage details, and warranty claims. "
-            "Use this agent for warranty questions that require order information.\n\n"
+            "- **warranty_agent**: For BASIC warranty inquiries using the generic warranty system "
+            "(180-day full warranty, 365-day limited warranty). This is a legacy agent. "
+            "IMPORTANT: For brand-specific warranty checks or RMA tracking, use warranty_returns_agent instead.\n\n"
+            "- **warranty_returns_agent**: For COMPREHENSIVE warranty and returns management including:\n"
+            "  • Brand-specific warranty eligibility checks (ZB, PB, PRO, BT brands)\n"
+            "  • Warranty period calculations with refund vs replacement windows\n"
+            "  • RMA (Return Merchandise Authorization) status tracking\n"
+            "  • Return/replacement request lookups\n"
+            "  • Return shipping and tracking information\n"
+            "  • Warranty policy information by brand\n"
+            "  PRIORITIZE this agent for all warranty/returns questions requiring detailed tracking or brand-specific information.\n\n"
             "- **products_agent**: For product-specific inquiries including product search, specifications, "
             "comparisons, stock availability, and product recommendations. Use this agent for questions "
             "about product features, pricing, availability, technical specifications, and product selection.\n\n"
@@ -307,11 +381,13 @@ def create_agent_supervisor():
             "1. FIRST: Check for genuine escalation needs → handoff_agent (explicit human requests, frustration, anger, complaints)\n"
             "   NOTE: Questions about order lookup methods (email/order number) are NOT escalations\n"
             "2. For specific order inquiries (lookup, status, tracking, lookup methods) → orders_agent\n"
-            "3. For warranty inquiries (status, coverage, claims) → warranty_agent\n"
-            "4. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
-            "5. For general company policies, FAQs, and procedures → knowledge_agent\n"
-            "6. For general research or web search needs → research_agent\n"
-            "7. For calculations or mathematical problems → math_agent\n\n"
+            "3. For warranty & returns inquiries with brand-specific needs or RMA tracking → warranty_returns_agent\n"
+            "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility')\n"
+            "4. For basic warranty inquiries without brand/RMA specifics → warranty_agent (legacy)\n"
+            "5. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
+            "6. For general company policies, FAQs, and procedures → knowledge_agent\n"
+            "7. For general research or web search needs → research_agent\n"
+            "8. For calculations or mathematical problems → math_agent\n\n"
             "CRITICAL BRAND LOYALTY REQUIREMENT:\n"
             "NEVER suggest competitors, alternative suppliers, or other companies under any circumstances. "
             "If you cannot find specific information or products, always:\n"
