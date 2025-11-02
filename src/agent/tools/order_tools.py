@@ -19,6 +19,7 @@ load_dotenv()
 from src.agent.tools.supabase_client import (
     get_supabase_client,
     query_orders_table,
+    query_orders_by_email,
     query_shipments_by_order_id,
     query_order_items_by_order_id
 )
@@ -76,16 +77,12 @@ def get_order_by_id(order_identifier: str) -> Optional[Dict[str, Any]]:
             return orders[0]
 
         # If not found and looks like an email, try email lookup
+        # Use case-insensitive email query to handle mixed-case emails
         if "@" in order_identifier:
-            orders = query_orders_table("BillEmail", order_identifier)
+            orders = get_orders_by_email(order_identifier, limit=1)
             if orders and len(orders) > 0:
-                # Return most recent order for this email
-                sorted_orders = sorted(
-                    orders,
-                    key=lambda x: x.get("OrderDate", ""),
-                    reverse=True
-                )
-                return sorted_orders[0]
+                # Return most recent order for this email (already sorted)
+                return orders[0]
 
         return None
 
@@ -106,19 +103,14 @@ def get_orders_by_email(email: str, limit: int = 5) -> List[Dict[str, Any]]:
         List of order records, sorted by date (most recent first)
     """
     try:
-        orders = query_orders_table("BillEmail", email)
+        # Use case-insensitive email query (already sorted by OrderDate descending)
+        orders = query_orders_by_email(email)
 
         if not orders:
             return []
 
-        # Sort by OrderDate, most recent first
-        sorted_orders = sorted(
-            orders,
-            key=lambda x: x.get("OrderDate", ""),
-            reverse=True
-        )
-
-        return sorted_orders[:limit]
+        # Apply limit (orders already sorted by utility function)
+        return orders[:limit]
 
     except Exception as e:
         logger.error(f"Error getting orders for email {email}: {e}")

@@ -192,3 +192,109 @@ def query_order_items_by_order_id(order_id: int) -> list:
     except Exception as e:
         logger.error(f"❌ Error querying order items table: {e}")
         raise
+
+
+def query_table_by_email(
+    table_name: str,
+    email_field: str,
+    email_value: str,
+    select_fields: str = "*",
+    order_by: Optional[str] = None,
+    order_desc: bool = True
+) -> list:
+    """Query any table by email with case-insensitive matching.
+
+    This function uses PostgreSQL's ILIKE operator for case-insensitive email matching,
+    which solves the common issue where database emails have mixed case
+    (e.g., "Erniedavis1979@gmail.com") but queries use lowercase.
+
+    Args:
+        table_name: Name of the table to query (e.g., "shipworks_order", "chromeinventory_rma")
+        email_field: Name of the email field (e.g., "BillEmail", "Email")
+        email_value: Email address to search for (case-insensitive)
+        select_fields: Fields to select (default: "*")
+        order_by: Optional field to order results by
+        order_desc: Whether to sort descending (default: True)
+
+    Returns:
+        List of matching records
+
+    Example:
+        # Find orders by email (case-insensitive)
+        orders = query_table_by_email("shipworks_order", "BillEmail", "JohnDoe@Example.com")
+
+        # Find RMA records by email
+        rmas = query_table_by_email("chromeinventory_rma", "Email", "user@email.com", order_by="RmaDate")
+    """
+    try:
+        client = get_supabase_client()
+
+        # Build query with case-insensitive email matching
+        query = (
+            client.table(table_name)
+            .select(select_fields)
+            .ilike(email_field, email_value.strip())  # ILIKE is case-insensitive
+        )
+
+        # Add ordering if specified
+        if order_by:
+            query = query.order(order_by, desc=order_desc)
+
+        response = query.execute()
+
+        logger.info(f"✅ Found {len(response.data)} records in {table_name} for email: {email_value}")
+        return response.data
+
+    except Exception as e:
+        logger.error(f"❌ Error querying {table_name} by email: {e}")
+        raise
+
+
+def query_orders_by_email(email: str, select_fields: str = "*") -> list:
+    """Query orders by email with case-insensitive matching.
+
+    Convenience function that wraps query_table_by_email for the shipworks_order table.
+
+    Args:
+        email: Email address to search for (case-insensitive)
+        select_fields: Fields to select (default: "*")
+
+    Returns:
+        List of matching order records
+
+    Example:
+        orders = query_orders_by_email("johndoe@example.com")
+    """
+    return query_table_by_email(
+        table_name="shipworks_order",
+        email_field="BillEmail",
+        email_value=email,
+        select_fields=select_fields,
+        order_by="OrderDate",
+        order_desc=True
+    )
+
+
+def query_rma_by_email(email: str, select_fields: str = "*") -> list:
+    """Query RMA records by email with case-insensitive matching.
+
+    Convenience function that wraps query_table_by_email for the chromeinventory_rma table.
+
+    Args:
+        email: Email address to search for (case-insensitive)
+        select_fields: Fields to select (default: "*")
+
+    Returns:
+        List of matching RMA records
+
+    Example:
+        rmas = query_rma_by_email("customer@email.com")
+    """
+    return query_table_by_email(
+        table_name="chromeinventory_rma",
+        email_field="Email",
+        email_value=email,
+        select_fields=select_fields,
+        order_by="RmaDate",
+        order_desc=True
+    )

@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import Supabase client utilities (for RMA queries only)
-from src.agent.tools.supabase_client import get_supabase_client
+from src.agent.tools.supabase_client import get_supabase_client, query_rma_by_email
 
 logger = logging.getLogger(__name__)
 
@@ -493,8 +493,10 @@ def lookup_rma_by_email(email: str) -> str:
     try:
         logger.info(f"Looking up RMA records for email: {email}")
 
-        # Query RMA table by email
-        rma_records = query_rma_table("Email", email.lower().strip())
+        # Query RMA table by email with case-insensitive matching
+        # This fixes the issue where mixed-case emails (e.g., "Erniedavis1979@gmail.com")
+        # wouldn't match when lowercased before querying
+        rma_records = query_rma_by_email(email)
 
         if not rma_records or len(rma_records) == 0:
             return f"📋 No RMA records found for {email}. If you need to initiate a return or replacement, please contact our support team."
