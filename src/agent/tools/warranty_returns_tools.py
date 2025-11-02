@@ -207,8 +207,8 @@ def calculate_warranty_status(
     refund_days_remaining = brand_info["refund_days"] - days_since_purchase
     replacement_days_remaining = brand_info["replacement_days"] - days_since_purchase
 
-    within_refund_period = refund_days_remaining > 0
-    within_replacement_period = replacement_days_remaining > 0
+    within_refund_period = refund_days_remaining >= 0
+    within_replacement_period = replacement_days_remaining >= 0
 
     # Generate status message
     if within_refund_period:
