@@ -68,11 +68,11 @@ def create_knowledge_agent():
 
 def create_orders_agent():
     """Create an orders management agent specialized in order lookup and status tracking."""
-    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number, get_order_items
+    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items
 
     orders_agent = create_react_agent(
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
-        tools=[lookup_order, get_order_status, get_tracking_number, get_order_items],
+        tools=[lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items],
         prompt=(
             "You are an orders specialist responsible for helping customers with order-related inquiries. "
             "Your primary functions include order lookups, status updates, tracking information, and product details.\n\n"
@@ -80,6 +80,7 @@ def create_orders_agent():
             "- Order details and information (use lookup_order)\n"
             "- Current order status (use get_order_status)\n"
             "- Shipping and tracking information (use get_tracking_number)\n"
+            "- Delivery status and tracking updates (use get_delivery_status)\n"
             "- Products/items in an order (use get_order_items)\n\n"
             "IMPORTANT: You can accept EITHER:\n"
             "• Order number (e.g., '12345')\n"
@@ -92,14 +93,21 @@ def create_orders_agent():
             "- 'What battery model did I get?'\n"
             "- Product names, SKUs, quantities, or specifications\n"
             "- Price per item or product descriptions\n\n"
+            "Delivery Status Tracking - ALWAYS include when available:\n"
+            "- Show 'Delivered' status with delivery date for completed shipments\n"
+            "- Show 'In transit' with estimated delivery for active shipments\n"
+            "- Include tracking status in order summaries (lookup_order provides this automatically)\n"
+            "- Use get_delivery_status for detailed tracking information and delivery updates\n"
+            "- Highlight delivery dates prominently - customers want to know when their order arrived or will arrive\n\n"
             "Guidelines:\n"
             "- If customer hasn't provided order information, ask: 'Please provide your order number or the email address you used when placing the order'\n"
             "- ALWAYS offer both options (order number OR email) when requesting information\n"
             "- Email addresses can look up multiple recent orders for selection\n"
             "- Order numbers provide direct access to specific order details\n"
-            "- Use lookup_order for comprehensive order details (includes item count but not product names)\n"
+            "- Use lookup_order for comprehensive order details (includes tracking status, item count but not product names)\n"
             "- Use get_order_status for quick status checks\n"
-            "- Use get_tracking_number specifically for tracking requests\n"
+            "- Use get_tracking_number specifically for tracking number requests\n"
+            "- Use get_delivery_status for detailed delivery status and tracking updates\n"
             "- Use get_order_items for detailed product information (names, SKUs, quantities, prices)\n"
             "- Present information clearly and offer additional help when appropriate\n"
             "- If an order isn't found, suggest double-checking the order number or trying the email address used for the order\n"
