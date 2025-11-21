@@ -47,6 +47,52 @@ def format_date(date_value: Any) -> str:
         return str(date_value)
 
 
+def decode_tracking_status(status_code: Any) -> str:
+    """
+    Decode ShipWorks tracking status code to human-readable text.
+
+    Mappings based on empirical analysis of 611,174 shipments from production database:
+
+    HIGH CONFIDENCE (verified by data):
+    - 0 = Not tracked (484,738 shipments, 0.0% delivered)
+    - 5 = Delivered (125,100 shipments, 99.98% delivered)
+
+    MEDIUM-HIGH CONFIDENCE:
+    - 4 = In transit (905 shipments, 67.8% have est. delivery, active tracking)
+
+    LOW CONFIDENCE (rare or unclear - using generic labels):
+    - 2, 3, 6, 7, 8, 9 = Generic status codes pending official ShipWorks documentation
+
+    Note: Official ShipWorks TrackingStatus enum documentation is not publicly available.
+    These mappings are data-driven based on analysis of ActualDeliveryDate correlation,
+    EstimatedDeliveryDate presence, and TrackingHubTimestamp patterns.
+
+    Data source: tracking_status_verification.txt (2025-11-21)
+    """
+    if status_code is None:
+        return "Not tracked"
+
+    # Only use verified mappings from empirical data analysis
+    status_map = {
+        0: "Not tracked",           # 484,738 shipments, 0.0% delivered - HIGH confidence
+        4: "In transit",             # 905 shipments, 67.8% est. delivery - MEDIUM-HIGH confidence
+        5: "Delivered",              # 125,100 shipments, 99.98% delivered - HIGH confidence
+        # Rare/unclear statuses - use generic labels until verified:
+        2: "Status 2",               # 86 shipments - needs investigation
+        3: "Status 3",               # 139 shipments - needs investigation
+        6: "Status 6",               # 84 shipments - needs investigation
+        7: "Status 7",               # 109 shipments - needs investigation
+        8: "Status 8",               # 8 shipments - very rare
+        9: "Status 9",               # 5 shipments - very rare
+    }
+
+    try:
+        code = int(status_code)
+        return status_map.get(code, f"Status code {code}")
+    except (ValueError, TypeError):
+        return "Status unavailable"
+
+
 def format_currency(amount: Any) -> str:
     """Format a currency amount from database."""
     if amount is None:
@@ -224,6 +270,12 @@ def lookup_order(order_id: Union[str, int]) -> str:
                         service = shipment.get("Service", "")
                         ship_date = format_date(shipment.get("ShipDate"))
 
+                        # NEW: Get tracking status information
+                        tracking_status_code = shipment.get("TrackingStatus")
+                        tracking_status = decode_tracking_status(tracking_status_code)
+                        est_delivery = format_date(shipment.get("EstimatedDeliveryDate"))
+                        actual_delivery = format_date(shipment.get("ActualDeliveryDate"))
+
                         if len(shipments) > 1:
                             details.append(f"\n  Shipment {idx}:")
                             prefix = "    "
@@ -239,6 +291,15 @@ def lookup_order(order_id: Union[str, int]) -> str:
                             details.append(f"{prefix}Carrier: {carrier_service}")
                         if ship_date != "Not available":
                             details.append(f"{prefix}Ship Date: {ship_date}")
+
+                        # NEW: Display tracking status and delivery information
+                        if tracking_status and tracking_status != "Not tracked":
+                            details.append(f"{prefix}Status: {tracking_status}")
+
+                        if actual_delivery != "Not available":
+                            details.append(f"{prefix}✓ Delivered: {actual_delivery}")
+                        elif est_delivery != "Not available":
+                            details.append(f"{prefix}Estimated Delivery: {est_delivery}")
                 else:
                     # No shipments yet
                     if status.lower() in ["shipped", "delivered"]:
@@ -379,6 +440,12 @@ def get_tracking_number(order_id: Union[str, int]) -> str:
             service = shipment.get("Service", "")
             ship_date = format_date(shipment.get("ShipDate"))
 
+            # NEW: Get tracking status and delivery information
+            tracking_status_code = shipment.get("TrackingStatus")
+            tracking_status = decode_tracking_status(tracking_status_code)
+            est_delivery = format_date(shipment.get("EstimatedDeliveryDate"))
+            actual_delivery = format_date(shipment.get("ActualDeliveryDate"))
+
             if len(shipments) > 1:
                 result.append(f"Shipment {idx}:")
 
@@ -396,6 +463,15 @@ def get_tracking_number(order_id: Union[str, int]) -> str:
             if ship_date != "Not available":
                 result.append(f"  Ship Date: {ship_date}")
 
+            # NEW: Display tracking status and delivery information
+            if tracking_status and tracking_status != "Not tracked":
+                result.append(f"  Status: {tracking_status}")
+
+            if actual_delivery != "Not available":
+                result.append(f"  ✓ Delivered: {actual_delivery}")
+            elif est_delivery != "Not available":
+                result.append(f"  Estimated Delivery: {est_delivery}")
+
             if idx < len(shipments):
                 result.append("")  # Add blank line between shipments
 
@@ -409,6 +485,125 @@ def get_tracking_number(order_id: Union[str, int]) -> str:
     except Exception as e:
         logger.error(f"Error getting tracking for order {order_id}: {e}")
         return "I'm having trouble retrieving tracking information right now. Please try again in a moment."
+
+
+@tool
+def get_delivery_status(order_id: Union[str, int]) -> str:
+    """
+    Get the current delivery status and tracking updates for a shipped order.
+
+    This tool provides detailed tracking status including current location,
+    delivery estimates, and delivery confirmation. Use this when customers
+    specifically ask about delivery status, tracking updates, or if their
+    package has been delivered.
+
+    Args:
+        order_id: The order number (string or integer) or email address to check delivery status
+
+    Returns:
+        Detailed delivery status with tracking timeline and delivery information
+    """
+    try:
+        logger.info(f"Getting delivery status for order: {order_id}")
+
+        # Normalize input
+        order_identifier = str(order_id).strip()
+
+        # Look up the order
+        order = get_order_by_id(order_identifier)
+
+        if not order:
+            return f"Order {order_identifier} not found. Please verify your order number and try again."
+
+        order_num = order.get("OrderNumberComplete") or order.get("OrderNumber") or order.get("OrderID")
+        status = order.get("OnlineStatus", "Unknown")
+
+        # Get shipments for this order
+        order_id_val = order.get("OrderID")
+        if not order_id_val:
+            return f"Order {order_num}: Unable to retrieve delivery status at this time."
+
+        shipments = query_shipments_by_order_id(order_id_val)
+
+        if not shipments:
+            return f"Order {order_num} (Status: {status})\n\nThis order has not shipped yet. We'll provide tracking and delivery updates once your order ships."
+
+        # Build detailed delivery status for all shipments
+        result = [f"Order {order_num} - Delivery Status:\n"]
+
+        for idx, shipment in enumerate(shipments, 1):
+            tracking = shipment.get("TrackingNumber")
+            tracking_status_code = shipment.get("TrackingStatus")
+            tracking_status = decode_tracking_status(tracking_status_code)
+            carrier = shipment.get("Carrier", "")
+            ship_date = format_date(shipment.get("ShipDate"))
+            est_delivery = format_date(shipment.get("EstimatedDeliveryDate"))
+            actual_delivery = format_date(shipment.get("ActualDeliveryDate"))
+            tracking_hub_timestamp = shipment.get("TrackingHubTimestamp")
+
+            if len(shipments) > 1:
+                result.append(f"Shipment {idx}:")
+
+            # Show tracking number
+            if tracking:
+                result.append(f"  📦 Tracking: {tracking}")
+            else:
+                result.append(f"  📦 Tracking: Not yet available")
+
+            # Show carrier if available
+            if carrier:
+                result.append(f"  Carrier: {carrier}")
+
+            # Show current status
+            if tracking_status and tracking_status != "Not tracked":
+                if tracking_status_code == 5:  # Delivered
+                    result.append(f"  ✅ {tracking_status.upper()}")
+                elif tracking_status_code == 4:  # Exception
+                    result.append(f"  ⚠️ {tracking_status}")
+                else:
+                    result.append(f"  📍 {tracking_status}")
+
+            # Show delivery dates
+            if actual_delivery != "Not available":
+                result.append(f"  Delivered On: {actual_delivery}")
+            elif est_delivery != "Not available":
+                result.append(f"  ⏰ Estimated Delivery: {est_delivery}")
+
+            # Show ship date
+            if ship_date != "Not available":
+                result.append(f"  Shipped: {ship_date}")
+
+            # Show last tracking update
+            if tracking_hub_timestamp:
+                try:
+                    if isinstance(tracking_hub_timestamp, str):
+                        dt = datetime.fromisoformat(tracking_hub_timestamp.replace('Z', '+00:00'))
+                        formatted_time = dt.strftime("%B %d, %Y at %I:%M %p")
+                        result.append(f"  Last Update: {formatted_time}")
+                except Exception:
+                    pass
+
+            if idx < len(shipments):
+                result.append("")
+
+        # Add helpful context
+        all_delivered = all(
+            decode_tracking_status(s.get("TrackingStatus")) == "Delivered"
+            for s in shipments
+        )
+
+        if all_delivered:
+            result.append("\n✓ All items have been delivered.")
+        else:
+            has_tracking = any(s.get("TrackingNumber") for s in shipments)
+            if not has_tracking:
+                result.append("\nNote: Tracking information is typically available within a few hours of shipment.")
+
+        return "\n".join(result)
+
+    except Exception as e:
+        logger.error(f"Error getting delivery status for order {order_id}: {e}")
+        return "I'm having trouble retrieving delivery status right now. Please try again in a moment."
 
 
 @tool
@@ -534,6 +729,6 @@ def get_order_items(order_id: Union[str, int]) -> str:
 
 
 # List of available tools for the orders agent
-available_tools = [lookup_order, get_order_status, get_tracking_number, get_order_items]
+available_tools = [lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items]
 
-__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "get_order_items", "available_tools"]
+__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "get_delivery_status", "get_order_items", "available_tools"]
