@@ -154,6 +154,36 @@ def create_products_agent():
     return products_agent
 
 
+def create_fitments_agent():
+    """Create a fitments agent specialized in vehicle-battery compatibility lookup."""
+    from src.agent.tools.fitments_tools import find_battery_for_vehicle, find_vehicles_for_battery
+
+    fitments_agent = create_react_agent(
+        model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
+        tools=[find_battery_for_vehicle, find_vehicles_for_battery],
+        prompt=(
+            "You are a vehicle-battery fitment specialist responsible for helping customers find "
+            "the right battery for their vehicle or identify which vehicles use a specific battery.\n\n"
+            "ALWAYS use the appropriate fitment tool for customer inquiries about:\n"
+            "- Battery compatibility for a vehicle (use find_battery_for_vehicle)\n"
+            "- Vehicles compatible with a battery (use find_vehicles_for_battery)\n\n"
+            "Guidelines:\n"
+            "- When customers provide vehicle information (make, model, year), use find_battery_for_vehicle\n"
+            "- When customers ask about a specific battery model, use find_vehicles_for_battery\n"
+            "- Always include the battery SKU in your response for Shopify product lookup\n"
+            "- Be specific about the recommended battery model\n"
+            "- If multiple batteries fit, recommend the primary match and mention alternatives\n"
+            "- Encourage customers to check product details for pricing and availability\n\n"
+            "IMPORTANT: After finding the battery, mention that detailed product information, "
+            "pricing, and the purchase link can be found by searching for the battery SKU or model "
+            "in our product catalog.\n\n"
+            "Be knowledgeable, helpful, and provide accurate fitment information."
+        ),
+        name="fitments_agent"
+    )
+    return fitments_agent
+
+
 def create_warranty_returns_agent():
     """Create a warranty returns agent specialized in warranty checking and RMA tracking."""
     from src.agent.tools.warranty_returns_tools import (
@@ -257,20 +287,21 @@ def create_handoff_agent():
 
 
 def create_agent_supervisor():
-    """Create a supervisor to manage knowledge, orders, warranty_returns, products, and handoff agents."""
+    """Create a supervisor to manage knowledge, orders, warranty_returns, products, fitments, and handoff agents."""
     # Create the specialized agents
     knowledge_agent = create_knowledge_agent()
     orders_agent = create_orders_agent()
     warranty_returns_agent = create_warranty_returns_agent()
     products_agent = create_products_agent()
+    fitments_agent = create_fitments_agent()
     handoff_agent = create_handoff_agent()
 
     # Create supervisor with proper multi-agent configuration
     supervisor = create_supervisor(
-        [knowledge_agent, orders_agent, warranty_returns_agent, products_agent, handoff_agent],  # Pass agents as first positional argument
+        [knowledge_agent, orders_agent, warranty_returns_agent, products_agent, fitments_agent, handoff_agent],  # Pass agents as first positional argument
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         prompt=(
-            "You are a supervisor managing five specialized agents:\n\n"
+            "You are a supervisor managing six specialized agents:\n\n"
             "- **handoff_agent**: For bot-to-human escalations. Use when customer:\n"
             "  • Explicitly asks for human agent ('speak to human', 'talk to a real person')\n"
             "  • Shows frustration or anger ('frustrated', 'useless bot', 'not helping')\n"
@@ -293,6 +324,12 @@ def create_agent_supervisor():
             "- **products_agent**: For product-specific inquiries including product search, specifications, "
             "comparisons, stock availability, and product recommendations. Use this agent for questions "
             "about product features, pricing, availability, technical specifications, and product selection.\n\n"
+            "- **fitments_agent**: For vehicle-battery compatibility queries. Use when customer:\n"
+            "  • Asks which battery fits their vehicle (make, model, year)\n"
+            "  • Wants to know which vehicles use a specific battery model\n"
+            "  • Mentions vehicle details like '2020 Honda CBR600' or 'Yamaha motorcycle'\n"
+            "  IMPORTANT: After fitments_agent returns battery SKU/model, route to products_agent "
+            "to get pricing, availability, and Shopify product link.\n\n"
             "- **knowledge_agent**: For general company policies, shipping procedures, FAQ content, "
             "general procedures, and help topics requiring knowledge base lookup. Use for policy and "
             "general questions but NOT for specific product, order, or warranty inquiries.\n\n"
@@ -302,8 +339,11 @@ def create_agent_supervisor():
             "2. For specific order inquiries (lookup, status, tracking, lookup methods) → orders_agent\n"
             "3. For ALL warranty & returns inquiries → warranty_returns_agent\n"
             "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility', 'Warranty policy')\n"
-            "4. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
-            "5. For general company policies, FAQs, and procedures → knowledge_agent\n\n"
+            "4. For vehicle-battery fitment queries → fitments_agent\n"
+            "   (Use cases: 'What battery fits my 2020 Honda?', 'Battery for Yamaha R6', 'Which vehicles use YTZ7S?')\n"
+            "   THEN: After fitments returns SKU → route to products_agent for Shopify details and purchase link\n"
+            "5. For product inquiries (search, specs, comparisons, stock, pricing) → products_agent\n"
+            "6. For general company policies, FAQs, and procedures → knowledge_agent\n\n"
             "CRITICAL BRAND LOYALTY REQUIREMENT:\n"
             "NEVER suggest competitors, alternative suppliers, or other companies under any circumstances. "
             "If you cannot find specific information or products, always:\n"
