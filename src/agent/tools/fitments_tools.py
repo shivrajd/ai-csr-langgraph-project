@@ -1,10 +1,10 @@
 """Vehicle-Battery Fitment Tools for the Fitments Agent.
 
 This module provides tools to look up battery compatibility for vehicles
-and find compatible vehicles for specific battery models using ChromaDB
-semantic search.
+and find compatible vehicles for specific battery models using Qdrant Cloud
+semantic search with OpenAI embeddings.
 
-The fitments data is synced from Supabase to ChromaDB Cloud for semantic
+The fitments data is synced from Supabase to Qdrant Cloud for semantic
 search capabilities, enabling natural language queries like:
 - "What battery fits my 2020 Honda CBR600?"
 - "Which vehicles use the YTZ7S battery?"
@@ -139,12 +139,12 @@ def find_battery_for_vehicle(vehicle_query: str) -> str:
         The primary recommendation includes the SKU for Shopify product lookup.
     """
     try:
-        from src.agent.tools.chroma_retriever import ChromaFitmentsRetriever
+        from src.agent.tools.qdrant_retriever import QdrantFitmentsRetriever
 
         logger.info(f"Searching batteries for vehicle: {vehicle_query}")
 
         # Initialize retriever and search
-        retriever = ChromaFitmentsRetriever()
+        retriever = QdrantFitmentsRetriever()
         results = retriever.search_battery_for_vehicle(query=vehicle_query, top_k=10)
 
         # Format and return results
@@ -180,12 +180,12 @@ def find_vehicles_for_battery(battery_model: str) -> str:
         List of compatible vehicles organized by make, with model and year information.
     """
     try:
-        from src.agent.tools.chroma_retriever import ChromaFitmentsRetriever
+        from src.agent.tools.qdrant_retriever import QdrantFitmentsRetriever
 
         logger.info(f"Searching vehicles for battery: {battery_model}")
 
         # Initialize retriever and search
-        retriever = ChromaFitmentsRetriever()
+        retriever = QdrantFitmentsRetriever()
         results = retriever.search_vehicles_for_battery(
             battery_model=battery_model,
             top_k=50  # Get more results for vehicle listings
