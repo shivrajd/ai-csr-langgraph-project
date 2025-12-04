@@ -59,12 +59,18 @@ def _format_battery_results(results: List[Dict[str, Any]]) -> str:
             lines.append(f"   - Fits: {vehicle_info}")
         lines.append("")
 
-    # Add note about Shopify lookup
+    # Add note about products lookup - supervisor will route to products_agent
     if unique_batteries:
         primary_sku = unique_batteries[0].get("chrome_sku", "")
         primary_model = unique_batteries[0].get("chrome_model", "")
-        lines.append(f"\n**Recommended:** {primary_model} (SKU: {primary_sku})")
-        lines.append("\nFor pricing, availability, and purchase link, search for this product in our store.")
+        lines.append(f"\n---")
+        lines.append(f"**🔋 RECOMMENDED BATTERY: {primary_model}**")
+        lines.append(f"**📦 PRODUCT SEARCH TERM: {primary_model}**")
+        lines.append("")
+        lines.append(f"⚠️ **SUPERVISOR ACTION REQUIRED:** Search products for exactly `{primary_model}` to get:")
+        lines.append("   - Verified product URL (clickable link)")
+        lines.append("   - Current price")
+        lines.append("   - Stock availability")
 
     return "\n".join(lines)
 
