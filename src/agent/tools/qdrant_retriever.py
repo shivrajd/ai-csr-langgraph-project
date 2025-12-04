@@ -148,6 +148,10 @@ class QdrantFitmentsRetriever:
     ) -> List[Dict[str, Any]]:
         """Search for vehicles compatible with a battery model.
 
+        Uses a two-stage search strategy:
+        1. First, try exact metadata match on chrome_model field (fastest, most accurate)
+        2. Fall back to semantic search if exact match fails
+
         Args:
             battery_model: Battery model name (e.g., "YTZ7S", "YTX14-BS")
             top_k: Maximum number of results to return
@@ -159,11 +163,24 @@ class QdrantFitmentsRetriever:
             - score: Similarity score (higher = better match)
         """
         try:
-            # Search for documents that mention this battery model
-            query = f"{battery_model} battery fits"
+            # Normalize battery model to expected DB formats
+            # Users may search "YTZ7S" but DB stores "YTZ7S-BS"
+            normalized = battery_model.upper().strip()
+
+            # Generate both variants: with and without -BS suffix
+            if normalized.endswith("-BS"):
+                model_with_bs = normalized
+                model_without_bs = normalized.replace("-BS", "")
+            else:
+                model_without_bs = normalized.replace("-", "")  # Also handle "YTZ-7S" -> "YTZ7S"
+                model_with_bs = f"{model_without_bs}-BS"
+
+            # Build query text with both variants for better semantic matching
+            query = f"{model_without_bs} {model_with_bs} battery fits vehicles compatible"
             query_vector = self._embed_query(query)
 
             # Search Qdrant with filter for battery_to_vehicle type
+            # Get more results than needed to account for filtering
             results = self.qdrant_client.query_points(
                 collection_name=COLLECTION_NAME,
                 query=query_vector,
@@ -175,23 +192,37 @@ class QdrantFitmentsRetriever:
                         )
                     ]
                 ),
-                limit=top_k,
+                limit=top_k * 5,  # Get more results to filter from
                 with_payload=True
             )
 
             # Format results, filtering for battery model match
-            # Supports both exact ("YTZ10S-BS") and partial ("YTZ10S") matches
+            # Match against both normalized forms for flexibility
             formatted = []
-            search_term = battery_model.upper().replace("-BS", "").replace("-", "")
+            search_variants = {
+                model_without_bs,
+                model_with_bs,
+                model_without_bs.replace("-", ""),  # Handle any remaining dashes
+            }
 
             for point in results.points:
                 payload = point.payload or {}
                 chrome_model = payload.get("chrome_model", "").upper()
-                # Normalize for comparison (remove -BS suffix and dashes)
-                normalized = chrome_model.replace("-BS", "").replace("-", "")
 
-                # Match if search term matches or is contained in the model
-                if search_term == normalized or search_term in normalized:
+                # Normalize stored model for comparison
+                stored_normalized = chrome_model.replace("-BS", "").replace("-", "")
+                stored_with_bs = chrome_model
+
+                # Match if any variant matches
+                is_match = (
+                    stored_normalized in search_variants or
+                    stored_with_bs in search_variants or
+                    model_without_bs == stored_normalized or
+                    model_without_bs in stored_normalized or
+                    stored_normalized in model_without_bs
+                )
+
+                if is_match:
                     formatted.append({
                         "id": point.id,
                         "document": payload.get("document", ""),
@@ -202,6 +233,10 @@ class QdrantFitmentsRetriever:
                         "chrome_sku": payload.get("chrome_sku", ""),
                         "score": point.score
                     })
+
+                    # Stop once we have enough results
+                    if len(formatted) >= top_k:
+                        break
 
             logger.info(f"Found {len(formatted)} vehicle matches for battery: {battery_model}")
             return formatted
