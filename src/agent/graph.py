@@ -68,11 +68,11 @@ def create_knowledge_agent():
 
 def create_orders_agent():
     """Create an orders management agent specialized in order lookup and status tracking."""
-    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items
+    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items, extract_order_from_screenshot
 
     orders_agent = create_react_agent(
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
-        tools=[lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items],
+        tools=[lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items, extract_order_from_screenshot],
         prompt=(
             "You are an orders specialist responsible for helping customers with order-related inquiries. "
             "Your primary functions include order lookups, status updates, tracking information, and product details.\n\n"
@@ -112,6 +112,20 @@ def create_orders_agent():
             "- Present information clearly and offer additional help when appropriate\n"
             "- If an order isn't found, suggest double-checking the order number or trying the email address used for the order\n"
             "- Be empathetic and helpful, especially for issues like cancellations or delays\n\n"
+            "IMAGE/SCREENSHOT ANALYSIS:\n"
+            "- When a customer message includes an image URL (format: [Attached image: URL]),\n"
+            "  use the extract_order_from_screenshot tool to analyze the image\n"
+            "- This is especially useful for orders from external platforms (Amazon, eBay, etc.)\n"
+            "  that aren't in our database\n"
+            "- After extracting information, provide helpful guidance based on visible details\n"
+            "- If the screenshot is unclear or not an order, ask for a clearer image\n\n"
+            "WORKFLOW FOR SCREENSHOT ORDERS:\n"
+            "1. If order lookup fails and the order might be from another platform, suggest:\n"
+            "   'Could you please upload a screenshot of your order confirmation?'\n"
+            "2. When a screenshot is uploaded (you'll see [Attached image: URL] in the message),\n"
+            "   use extract_order_from_screenshot to analyze it\n"
+            "3. Present the extracted information and offer assistance based on what's visible\n"
+            "4. For complex issues requiring access to external systems, suggest human agent assistance\n\n"
             "Be accurate, helpful, and always use the specific tools available to provide precise order information."
         ),
         name="orders_agent"
@@ -310,7 +324,10 @@ def create_agent_supervisor():
             "- **orders_agent**: For order-specific inquiries including order lookup, status checks, "
             "tracking information, and any questions about specific customer orders. "
             "PRIORITIZE this agent for order-related questions, INCLUDING questions about how to look up orders "
-            "(whether to use email or order number).\n\n"
+            "(whether to use email or order number).\n"
+            "  ALSO handles image/screenshot analysis for orders from external platforms.\n"
+            "  When customer uploads an order screenshot (message contains [Attached image: URL]),\n"
+            "  route to orders_agent for vision-based extraction.\n\n"
             "- **warranty_returns_agent**: For ALL warranty and returns management including:\n"
             "  • Brand-specific warranty eligibility checks (ZB, PB, PRO, BT brands)\n"
             "  • Warranty period calculations with refund vs replacement windows\n"
@@ -342,6 +359,7 @@ def create_agent_supervisor():
             "1. FIRST: Check for genuine escalation needs → handoff_agent (explicit human requests, frustration, anger, complaints)\n"
             "   NOTE: Questions about order lookup methods (email/order number) are NOT escalations\n"
             "2. For specific order inquiries (lookup, status, tracking, lookup methods) → orders_agent\n"
+            "   ALSO: If message contains [Attached image: URL] → orders_agent (for screenshot analysis)\n"
             "3. For ALL warranty & returns inquiries → warranty_returns_agent\n"
             "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility', 'Warranty policy')\n"
             "4. For vehicle-battery fitment queries → fitments_agent THEN products_agent (MANDATORY)\n"

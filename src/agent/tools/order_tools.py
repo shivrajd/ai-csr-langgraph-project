@@ -3,6 +3,9 @@ Order Management Tools for the Orders Agent.
 
 This module provides order management functionality using real data from Supabase
 tables (shipworks_order and shipworks_shipment).
+
+Also includes vision-based order extraction for screenshots of orders from
+external platforms (Amazon, eBay, etc.) using GPT-4o vision.
 """
 
 import logging
@@ -14,6 +17,9 @@ from langchain_core.tools import tool
 # Load environment variables if not already loaded
 from dotenv import load_dotenv
 load_dotenv()
+
+# OpenAI client for vision-based order extraction
+from openai import OpenAI
 
 # Import Supabase client utilities
 from src.agent.tools.supabase_client import (
@@ -728,7 +734,110 @@ def get_order_items(order_id: Union[str, int]) -> str:
         return "I'm having trouble retrieving product information right now. Please try again in a moment."
 
 
-# List of available tools for the orders agent
-available_tools = [lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items]
+@tool
+def extract_order_from_screenshot(image_url: str) -> str:
+    """
+    Analyze an order screenshot using GPT-4o vision to extract order details.
 
-__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "get_delivery_status", "get_order_items", "available_tools"]
+    Use this tool when a customer uploads an image/screenshot of their order
+    (from Amazon, eBay, another platform, or their email confirmation) and you
+    need to extract the order information. This is especially useful for orders
+    that are not in our database.
+
+    Args:
+        image_url: URL of the screenshot uploaded by customer (from Chatwoot data_url)
+
+    Returns:
+        Extracted order details including order number, date, items, amounts,
+        shipping info, and tracking (if visible). Returns error message if
+        extraction fails or image is not a valid order screenshot.
+    """
+    try:
+        logger.info(f"🔍 Extracting order details from screenshot: {image_url[:80]}...")
+
+        # Initialize OpenAI client
+        client = OpenAI()
+
+        # Structured extraction prompt for consistent output
+        extraction_prompt = """Analyze this order screenshot and extract ALL visible order information.
+
+Please extract and format the following details:
+
+**ORDER INFORMATION:**
+- Order Number/Confirmation Number:
+- Order Date:
+- Platform/Source (Amazon, eBay, email, etc.):
+
+**ITEMS ORDERED:**
+For each item, list:
+- Product Name:
+- Quantity:
+- Price per item:
+
+**FINANCIAL SUMMARY:**
+- Subtotal:
+- Tax:
+- Shipping cost:
+- Total Amount:
+
+**SHIPPING INFORMATION (if visible):**
+- Shipping Name:
+- Shipping Address:
+- Delivery Method:
+- Tracking Number (if shown):
+- Estimated/Actual Delivery Date:
+
+**STATUS:**
+- Order Status (ordered, shipped, delivered, etc.):
+
+If any field is not visible or unclear in the image, write "Not visible" for that field.
+If this is NOT an order screenshot, explain what type of image it is.
+
+Format your response clearly with the sections above."""
+
+        # Call GPT-4o vision API
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": extraction_prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}}
+                    ]
+                }
+            ],
+            max_tokens=1500,
+            temperature=0.2  # Lower temperature for more consistent extraction
+        )
+
+        # Extract the response content
+        extracted_info = response.choices[0].message.content
+
+        if not extracted_info or not extracted_info.strip():
+            logger.warning("GPT-4o returned empty response for order extraction")
+            return "I wasn't able to extract order information from this image. Could you please upload a clearer screenshot of your order confirmation?"
+
+        logger.info(f"✅ Successfully extracted order info from screenshot")
+        logger.debug(f"Extracted content: {extracted_info[:200]}...")
+
+        return extracted_info
+
+    except Exception as e:
+        logger.error(f"Error extracting order from screenshot: {e}")
+
+        # Provide helpful error message based on error type
+        error_str = str(e).lower()
+
+        if "invalid_image_url" in error_str or "could not process" in error_str:
+            return "I wasn't able to access this image. Please try uploading the screenshot again, or ensure it's a valid image file (PNG, JPG, etc.)."
+        elif "rate_limit" in error_str:
+            return "I'm experiencing high demand right now. Please try again in a moment."
+        else:
+            return f"I encountered an issue analyzing this image. Please try uploading a clearer screenshot of your order, or contact support for assistance."
+
+
+# List of available tools for the orders agent
+available_tools = [lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items, extract_order_from_screenshot]
+
+__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "get_delivery_status", "get_order_items", "extract_order_from_screenshot", "available_tools"]
