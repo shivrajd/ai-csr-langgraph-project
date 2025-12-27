@@ -68,11 +68,33 @@ def create_knowledge_agent():
 
 def create_orders_agent():
     """Create an orders management agent specialized in order lookup and status tracking."""
-    from src.agent.tools.order_tools import lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items, extract_order_from_screenshot
+    from src.agent.tools.order_tools import (
+        lookup_order,
+        get_order_status,
+        get_tracking_number,
+        get_delivery_status,
+        get_order_items,
+        extract_order_from_screenshot,
+        # State tracking tools for Amazon order workflow
+        note_order_lookup_result,
+        note_marketplace_response,
+        should_request_screenshot
+    )
 
     orders_agent = create_react_agent(
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
-        tools=[lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items, extract_order_from_screenshot],
+        tools=[
+            lookup_order,
+            get_order_status,
+            get_tracking_number,
+            get_delivery_status,
+            get_order_items,
+            extract_order_from_screenshot,
+            # State tracking tools
+            note_order_lookup_result,
+            note_marketplace_response,
+            should_request_screenshot
+        ],
         prompt=(
             "You are an orders specialist responsible for helping customers with order-related inquiries. "
             "Your primary functions include order lookups, status updates, tracking information, and product details.\n\n"
@@ -110,22 +132,48 @@ def create_orders_agent():
             "- Use get_delivery_status for detailed delivery status and tracking updates\n"
             "- Use get_order_items for detailed product information (names, SKUs, quantities, prices)\n"
             "- Present information clearly and offer additional help when appropriate\n"
-            "- If an order isn't found, suggest double-checking the order number or trying the email address used for the order\n"
             "- Be empathetic and helpful, especially for issues like cancellations or delays\n\n"
-            "IMAGE/SCREENSHOT ANALYSIS:\n"
-            "- When a customer message includes an image URL (format: [Attached image: URL]),\n"
-            "  use the extract_order_from_screenshot tool to analyze the image\n"
-            "- This is especially useful for orders from external platforms (Amazon, eBay, etc.)\n"
-            "  that aren't in our database\n"
-            "- After extracting information, provide helpful guidance based on visible details\n"
-            "- If the screenshot is unclear or not an order, ask for a clearer image\n\n"
-            "WORKFLOW FOR SCREENSHOT ORDERS:\n"
-            "1. If order lookup fails and the order might be from another platform, suggest:\n"
-            "   'Could you please upload a screenshot of your order confirmation?'\n"
-            "2. When a screenshot is uploaded (you'll see [Attached image: URL] in the message),\n"
-            "   use extract_order_from_screenshot to analyze it\n"
-            "3. Present the extracted information and offer assistance based on what's visible\n"
-            "4. For complex issues requiring access to external systems, suggest human agent assistance\n\n"
+            "=== AMAZON ORDER VERIFICATION WORKFLOW ===\n"
+            "When an order is NOT found in our database, follow this STRICT workflow:\n\n"
+            "STEP 1 - GATHER ORDER INFO:\n"
+            "- Ask: 'Please provide your order number or the email address used for your order'\n"
+            "- When customer provides info, use lookup_order to search our database\n"
+            "- After lookup, call note_order_lookup_result to record the result\n\n"
+            "STEP 2 - IF ORDER FOUND IN DATABASE:\n"
+            "- Use the database information to help the customer\n"
+            "- Do NOT ask for a screenshot - we already have all the data\n\n"
+            "STEP 3 - IF ORDER NOT FOUND:\n"
+            "- Ask: 'I couldn't find that order in our system. What marketplace was this order from? "
+            "(For example: Amazon, eBay, Walmart, or chromebattery.com)'\n"
+            "- When customer answers, call note_marketplace_response with their answer\n\n"
+            "STEP 4 - BASED ON MARKETPLACE RESPONSE:\n"
+            "• If AMAZON:\n"
+            "  - Ask: 'Could you please upload a screenshot of your Amazon order confirmation? "
+            "This will help me assist you with your inquiry.'\n"
+            "  - When customer uploads screenshot, you'll see a message containing:\n"
+            "    [SCREENSHOT UPLOADED]\n"
+            "    The customer has uploaded an image/screenshot.\n"
+            "    To analyze this image, call the extract_order_from_screenshot tool with image_url=\"img_xxx_xxx\"\n"
+            "  - IMMEDIATELY call extract_order_from_screenshot with the image reference ID shown (img_xxx_xxx)\n"
+            "  - Present the extracted information and offer assistance\n\n"
+            "• If CHROMEBATTERY.COM:\n"
+            "  - Suggest double-checking the order number or trying a different email\n"
+            "  - Orders from our website should be in our database\n\n"
+            "• If OTHER MARKETPLACE (eBay, Walmart, etc.):\n"
+            "  - Respond: 'For [marketplace] orders, I recommend connecting you with a team member "
+            "who can assist you directly. Would you like me to do that?'\n"
+            "  - Do NOT request a screenshot for non-Amazon orders\n\n"
+            "CRITICAL RULES:\n"
+            "- NEVER use extract_order_from_screenshot unless ALL conditions are met:\n"
+            "  1. Order was NOT found in our database\n"
+            "  2. Customer confirmed marketplace is Amazon\n"
+            "  3. Customer has uploaded a screenshot (you'll see [SCREENSHOT UPLOADED] in message)\n"
+            "- When you see [SCREENSHOT UPLOADED] with an image reference ID (img_xxx_xxx), IMMEDIATELY call\n"
+            "  extract_order_from_screenshot with that reference ID - DO NOT ask for another screenshot!\n"
+            "- If order IS found in database, use that data (no screenshot needed)\n"
+            "- ONLY parse Amazon order screenshots - suggest human help for other marketplaces\n"
+            "- Use should_request_screenshot to verify conditions before asking for a screenshot\n\n"
+            "=== END AMAZON ORDER WORKFLOW ===\n\n"
             "Be accurate, helpful, and always use the specific tools available to provide precise order information."
         ),
         name="orders_agent"
@@ -325,9 +373,13 @@ def create_agent_supervisor():
             "tracking information, and any questions about specific customer orders. "
             "PRIORITIZE this agent for order-related questions, INCLUDING questions about how to look up orders "
             "(whether to use email or order number).\n"
-            "  ALSO handles image/screenshot analysis for orders from external platforms.\n"
-            "  When customer uploads an order screenshot (message contains [Attached image: URL]),\n"
-            "  route to orders_agent for vision-based extraction.\n\n"
+            "  AMAZON ORDER WORKFLOW: When orders are not found in our database, orders_agent will:\n"
+            "  1. Ask customer for order number/email\n"
+            "  2. Try database lookup\n"
+            "  3. If not found, ask which marketplace the order is from\n"
+            "  4. Only request screenshot if customer confirms AMAZON\n"
+            "  5. Parse screenshot only after Amazon confirmation\n"
+            "  NOTE: Orders agent will NOT immediately parse uploaded screenshots - it follows the verification flow.\n\n"
             "- **warranty_returns_agent**: For ALL warranty and returns management including:\n"
             "  • Brand-specific warranty eligibility checks (ZB, PB, PRO, BT brands)\n"
             "  • Warranty period calculations with refund vs replacement windows\n"
@@ -359,7 +411,8 @@ def create_agent_supervisor():
             "1. FIRST: Check for genuine escalation needs → handoff_agent (explicit human requests, frustration, anger, complaints)\n"
             "   NOTE: Questions about order lookup methods (email/order number) are NOT escalations\n"
             "2. For specific order inquiries (lookup, status, tracking, lookup methods) → orders_agent\n"
-            "   ALSO: If message contains [Attached image: URL] → orders_agent (for screenshot analysis)\n"
+            "   NOTE: orders_agent handles the full Amazon order verification workflow internally.\n"
+            "   It will ask for order info, try DB lookup, ask marketplace, then request screenshot (Amazon only).\n"
             "3. For ALL warranty & returns inquiries → warranty_returns_agent\n"
             "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility', 'Warranty policy')\n"
             "4. For vehicle-battery fitment queries → fitments_agent THEN products_agent (MANDATORY)\n"

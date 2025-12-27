@@ -734,6 +734,47 @@ def get_order_items(order_id: Union[str, int]) -> str:
         return "I'm having trouble retrieving product information right now. Please try again in a moment."
 
 
+def _resolve_image_reference(image_url: str) -> str:
+    """
+    Resolve an image reference ID to actual base64 data URL.
+
+    If the image_url is a reference ID (starts with 'img_'), fetches the
+    actual base64 data from the FastAPI integration server.
+
+    Args:
+        image_url: Either a direct URL/base64 or a reference ID like 'img_123_abc'
+
+    Returns:
+        The actual image URL (base64 data URL or regular URL)
+    """
+    if not image_url.startswith('img_'):
+        # Not a reference ID, return as-is
+        return image_url
+
+    logger.info(f"📷 Resolving image reference: {image_url}")
+
+    # Get FastAPI server URL from environment (default to local)
+    fastapi_url = os.getenv("FASTAPI_URL", "http://localhost:8000")
+
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(f"{fastapi_url}/api/image/{image_url}")
+            response.raise_for_status()
+
+            data = response.json()
+            if data.get("status") == "success" and data.get("image_url"):
+                logger.info(f"✅ Resolved image reference to base64 ({len(data['image_url'])} chars)")
+                return data["image_url"]
+            else:
+                logger.error(f"❌ Failed to resolve image reference: {data}")
+                return image_url
+
+    except Exception as e:
+        logger.error(f"❌ Error resolving image reference {image_url}: {e}")
+        return image_url
+
+
 @tool
 def extract_order_from_screenshot(image_url: str) -> str:
     """
@@ -745,7 +786,10 @@ def extract_order_from_screenshot(image_url: str) -> str:
     that are not in our database.
 
     Args:
-        image_url: URL of the screenshot uploaded by customer (from Chatwoot data_url)
+        image_url: URL of the screenshot uploaded by customer. Can be:
+                   - A regular URL (https://...)
+                   - A base64 data URL (data:image/png;base64,...)
+                   - An image reference ID (img_123_abc) which will be resolved
 
     Returns:
         Extracted order details including order number, date, items, amounts,
@@ -754,6 +798,11 @@ def extract_order_from_screenshot(image_url: str) -> str:
     """
     try:
         logger.info(f"🔍 Extracting order details from screenshot: {image_url[:80]}...")
+
+        # Resolve image reference if needed
+        resolved_url = _resolve_image_reference(image_url)
+        if resolved_url != image_url:
+            logger.info(f"📷 Resolved image reference to actual data")
 
         # Initialize OpenAI client
         client = OpenAI()
@@ -795,7 +844,7 @@ If this is NOT an order screenshot, explain what type of image it is.
 
 Format your response clearly with the sections above."""
 
-        # Call GPT-4o vision API
+        # Call GPT-4o vision API with resolved URL
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -803,7 +852,7 @@ Format your response clearly with the sections above."""
                     "role": "user",
                     "content": [
                         {"type": "text", "text": extraction_prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}}
+                        {"type": "image_url", "image_url": {"url": resolved_url}}
                     ]
                 }
             ],
@@ -837,7 +886,147 @@ Format your response clearly with the sections above."""
             return f"I encountered an issue analyzing this image. Please try uploading a clearer screenshot of your order, or contact support for assistance."
 
 
-# List of available tools for the orders agent
-available_tools = [lookup_order, get_order_status, get_tracking_number, get_delivery_status, get_order_items, extract_order_from_screenshot]
+# =============================================================================
+# STATE TRACKING TOOLS FOR AMAZON ORDER WORKFLOW
+# =============================================================================
+# These tools help track the conversation flow when handling orders that
+# might be from external platforms (especially Amazon). They ensure the
+# agent follows the correct sequence: ask for order info → try DB lookup →
+# ask marketplace → request screenshot (only if Amazon).
+# =============================================================================
 
-__all__ = ["lookup_order", "get_order_status", "get_tracking_number", "get_delivery_status", "get_order_items", "extract_order_from_screenshot", "available_tools"]
+@tool
+def note_order_lookup_result(order_identifier: str, order_found: bool) -> str:
+    """
+    Record whether an order was found in the database after lookup.
+    Call this AFTER using lookup_order to track the result and determine next steps.
+
+    This tool helps enforce the Amazon order workflow by tracking whether
+    we found the order in our database (no screenshot needed) or not
+    (need to ask about marketplace).
+
+    Args:
+        order_identifier: The order number or email that was looked up
+        order_found: True if order exists in our database, False otherwise
+
+    Returns:
+        Status message with clear instructions for the next step
+    """
+    logger.info(f"📋 Recording order lookup result: identifier='{order_identifier}', found={order_found}")
+
+    if order_found:
+        return (
+            f"ORDER_FOUND: '{order_identifier}' exists in our database.\n"
+            f"ACTION: Use the database information to help the customer.\n"
+            f"Do NOT ask for a screenshot - we have all the order data needed."
+        )
+    else:
+        return (
+            f"ORDER_NOT_FOUND: '{order_identifier}' was not found in our database.\n"
+            f"NEXT_STEP: Ask the customer which marketplace the order is from.\n"
+            f"Ask: 'I couldn't find that order in our system. What marketplace "
+            f"was this order from? (For example: Amazon, eBay, Walmart, or chromebattery.com)'"
+        )
+
+
+@tool
+def note_marketplace_response(marketplace: str) -> str:
+    """
+    Record the customer's marketplace response and determine the next action.
+    Call this AFTER the customer tells you which marketplace their order is from.
+
+    This tool is critical for the Amazon order workflow - it determines whether
+    to request a screenshot (Amazon only) or suggest human assistance (other marketplaces).
+
+    Args:
+        marketplace: The marketplace name provided by customer (e.g., "Amazon", "eBay", "Walmart")
+
+    Returns:
+        Status message with clear instructions based on the marketplace
+    """
+    marketplace_lower = marketplace.lower().strip()
+    logger.info(f"🏪 Recording marketplace response: '{marketplace}'")
+
+    if "amazon" in marketplace_lower:
+        logger.info("✅ Amazon marketplace confirmed - screenshot parsing will be allowed")
+        return (
+            "AMAZON_CONFIRMED: This is an Amazon order.\n"
+            "NEXT_STEP: Request a screenshot of the order confirmation.\n"
+            "Ask: 'Could you please upload a screenshot of your Amazon order "
+            "confirmation? This will help me assist you with your inquiry.'\n"
+            "Once the customer uploads the screenshot, use extract_order_from_screenshot to analyze it."
+        )
+    elif "chromebattery" in marketplace_lower or "chrome battery" in marketplace_lower:
+        logger.info("🔄 ChromeBattery marketplace - suggest re-checking order info")
+        return (
+            f"CHROMEBATTERY_ORDER: Customer indicated '{marketplace}'.\n"
+            f"ACTION: The order should be in our database. Suggest double-checking the order number or email.\n"
+            f"Respond: 'Orders from our website should be in our system. Could you please "
+            f"double-check the order number or try a different email address that might have been used?'"
+        )
+    else:
+        logger.info(f"⚠️ Non-Amazon marketplace '{marketplace}' - suggesting human assistance")
+        return (
+            f"NON_AMAZON: Customer indicated '{marketplace}'.\n"
+            f"ACTION: Do NOT request a screenshot. Suggest connecting with a human team member.\n"
+            f"Respond: 'For {marketplace} orders, I recommend connecting you with a team member "
+            f"who can assist you directly. Would you like me to do that?'"
+        )
+
+
+@tool
+def should_request_screenshot() -> str:
+    """
+    Check if conditions are met to request a screenshot from the customer.
+    Use this to verify the workflow state before asking for a screenshot.
+
+    This is a verification tool to help ensure the agent follows the correct
+    sequence before requesting an Amazon order screenshot.
+
+    Returns:
+        A checklist of conditions that must be met before requesting a screenshot.
+    """
+    logger.info("📝 Checking screenshot request conditions")
+    return (
+        "SCREENSHOT REQUEST CHECKLIST:\n"
+        "Before requesting a screenshot, verify ALL conditions are met:\n\n"
+        "1. ✓ You asked the customer for their order number or email address\n"
+        "2. ✓ You called lookup_order with their information\n"
+        "3. ✓ The order was NOT found in our database\n"
+        "4. ✓ You asked the customer which marketplace the order is from\n"
+        "5. ✓ The customer confirmed the order is from AMAZON\n\n"
+        "If all conditions are met:\n"
+        "→ Ask: 'Could you please upload a screenshot of your Amazon order confirmation?'\n\n"
+        "If marketplace was NOT Amazon:\n"
+        "→ Suggest connecting with a human team member instead.\n"
+        "→ Do NOT request a screenshot for non-Amazon orders."
+    )
+
+
+# List of available tools for the orders agent
+available_tools = [
+    lookup_order,
+    get_order_status,
+    get_tracking_number,
+    get_delivery_status,
+    get_order_items,
+    extract_order_from_screenshot,
+    # State tracking tools for Amazon order workflow
+    note_order_lookup_result,
+    note_marketplace_response,
+    should_request_screenshot
+]
+
+__all__ = [
+    "lookup_order",
+    "get_order_status",
+    "get_tracking_number",
+    "get_delivery_status",
+    "get_order_items",
+    "extract_order_from_screenshot",
+    # State tracking tools
+    "note_order_lookup_result",
+    "note_marketplace_response",
+    "should_request_screenshot",
+    "available_tools"
+]
