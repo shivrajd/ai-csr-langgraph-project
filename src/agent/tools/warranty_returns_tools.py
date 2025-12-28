@@ -92,7 +92,15 @@ def format_date(date_value: Any) -> str:
 
 
 def parse_date(date_value: Any) -> Optional[datetime]:
-    """Parse a date value to datetime object (timezone-naive for calculations)."""
+    """Parse a date value to datetime object (timezone-naive for calculations).
+
+    Supports multiple date formats commonly found in order screenshots:
+    - ISO format: 2024-01-15, 2024-01-15T10:30:00
+    - US format: 01/15/2024
+    - Full month: January 15, 2024
+    - Abbreviated month: Jan 15, 2024
+    - With ordinal: January 15th, 2024
+    """
     if not date_value:
         return None
 
@@ -103,18 +111,38 @@ def parse_date(date_value: Any) -> Optional[datetime]:
                 return date_value.replace(tzinfo=None)
             return date_value
         elif isinstance(date_value, str):
+            # Clean up the string - remove ordinal suffixes (1st, 2nd, 3rd, 4th, etc.)
+            clean_value = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', date_value.strip())
+
             # Try ISO format first
             try:
-                dt = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(clean_value.replace('Z', '+00:00'))
                 # Convert to naive datetime
                 return dt.replace(tzinfo=None) if dt.tzinfo else dt
             except:
-                # Try other common formats
-                for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S"]:
-                    try:
-                        return datetime.strptime(date_value, fmt)
-                    except:
-                        continue
+                pass
+
+            # Try various common formats
+            date_formats = [
+                "%Y-%m-%d",             # 2024-01-15
+                "%m/%d/%Y",             # 01/15/2024
+                "%Y-%m-%d %H:%M:%S",    # 2024-01-15 10:30:00
+                "%B %d, %Y",            # January 15, 2024
+                "%b %d, %Y",            # Jan 15, 2024
+                "%d %B %Y",             # 15 January 2024
+                "%d %b %Y",             # 15 Jan 2024
+                "%B %d %Y",             # January 15 2024 (no comma)
+                "%b %d %Y",             # Jan 15 2024 (no comma)
+                "%m-%d-%Y",             # 01-15-2024
+                "%d/%m/%Y",             # 15/01/2024 (European format)
+            ]
+
+            for fmt in date_formats:
+                try:
+                    return datetime.strptime(clean_value, fmt)
+                except ValueError:
+                    continue
+
         return None
     except Exception as e:
         logger.warning(f"Error parsing date {date_value}: {e}")
@@ -147,6 +175,68 @@ def extract_brand_from_sku(sku: str) -> str:
         if sku_upper.startswith(f"{brand}-") or sku_upper.startswith(brand):
             return brand
 
+    return "default"
+
+
+# Keyword mappings for brand detection from product names
+# Used when no SKU is available (e.g., Amazon order screenshots)
+BRAND_KEYWORD_MAPPINGS = {
+    "BT": ["bluetooth", "bt-", "wireless"],
+    "PRO": ["pro", "pro series", "pro-", "igel"],
+    "PB": ["pirate", "pb-"],
+    "ZB": ["zipp", "zb-"]
+}
+
+
+def extract_brand_from_text(text: str) -> str:
+    """
+    Extract brand from product text (name, description, or mixed content).
+
+    This function uses a three-tier detection system:
+    1. SKU prefix match: Look for patterns like ZB-, PB-, PRO-, BT- in the text
+    2. Keyword matching: Match product name keywords to brand categories
+    3. Fallback: Return "default" if no match found
+
+    This is especially useful for Amazon order screenshots where the product
+    name might not contain a clear SKU prefix.
+
+    Examples:
+        "Chrome Battery ZB-12R-35" -> "ZB" (SKU prefix match)
+        "BT-ABS-100 Motorcycle Battery" -> "BT" (SKU prefix match)
+        "Bluetooth Enabled Powersport Battery" -> "BT" (keyword match)
+        "Professional Series Deep Cycle Battery" -> "PRO" (keyword match)
+        "High Performance AGM Battery" -> "PB" (keyword match)
+        "Chrome Battery Motorcycle Battery 12V" -> "default" (no match)
+
+    Args:
+        text: Product text containing name, SKU, or description
+
+    Returns:
+        Brand prefix (uppercase) or "default" if no match
+    """
+    if not text:
+        return "default"
+
+    text_upper = text.upper().strip()
+
+    # Step 1: Try SKU prefix match first (highest priority)
+    # Look for SKU-like patterns anywhere in the text
+    for brand in ["PRO", "BT", "ZB", "PB"]:
+        # Check for brand prefix with dash (e.g., "ZB-12R-35")
+        if f"{brand}-" in text_upper:
+            logger.debug(f"Brand detected via SKU prefix: {brand}")
+            return brand
+
+    # Step 2: Keyword matching (medium priority)
+    text_lower = text.lower()
+    for brand, keywords in BRAND_KEYWORD_MAPPINGS.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                logger.debug(f"Brand detected via keyword '{keyword}': {brand}")
+                return brand
+
+    # Step 3: Fallback to default
+    logger.debug(f"No brand detected in text, using default: {text[:50]}...")
     return "default"
 
 
@@ -415,6 +505,149 @@ def check_product_warranty_status(order_number: str) -> str:
 
 
 @tool
+def check_warranty_from_order_data(
+    order_date: str,
+    items: str,
+    platform: str = "Amazon"
+) -> str:
+    """
+    Check warranty status from extracted order data (e.g., from screenshot).
+
+    Use this tool when order data has been extracted from a screenshot or other
+    external source and is NOT in our database. This is especially useful for
+    Amazon Vendor orders where we don't have database records.
+
+    This tool determines brand from the product text using:
+    1. SKU prefix detection (ZB-, PB-, PRO-, BT-)
+    2. Keyword matching (Bluetooth, Professional, Performance, Standard)
+    3. Default warranty periods if no match
+
+    Args:
+        order_date: Order date in any common format. Examples:
+                    - "January 15, 2024"
+                    - "2024-01-15"
+                    - "01/15/2024"
+                    - "Ordered on Jan 15, 2024"
+        items: Product information as text from the screenshot. Can include:
+               - Product names with SKUs: "Chrome Battery ZB-12R-35"
+               - Product descriptions: "Bluetooth Motorcycle Battery 12V 6Ah"
+               - Multiple items separated by newlines or commas
+               Example: "Chrome Battery YTX7A-BS - Quantity: 1"
+        platform: Order platform source (default: "Amazon")
+
+    Returns:
+        Formatted warranty status including:
+        - Purchase date and platform
+        - Detected brand and warranty periods
+        - Refund/replacement eligibility status
+        - Days remaining or days since expiry
+
+    Examples:
+        >>> check_warranty_from_order_data(
+        ...     order_date="January 15, 2024",
+        ...     items="Chrome Battery ZB-12R-35 Motorcycle Battery",
+        ...     platform="Amazon"
+        ... )
+        "📦 Amazon Order Warranty Status
+        📅 Purchase Date: January 15, 2024
+        🏪 Platform: Amazon
+
+        Product: Chrome Battery ZB-12R-35 Motorcycle Battery
+        Brand: Standard (ZB)
+        ✅ Within replacement period (245 days remaining)
+        ..."
+    """
+    try:
+        logger.info(f"Checking warranty from order data - date: {order_date}, platform: {platform}")
+
+        # Parse the order date
+        parsed_date = parse_date(order_date)
+        if not parsed_date:
+            # Try to extract date from longer text (e.g., "Ordered on Jan 15, 2024")
+            # Common patterns in Amazon order screenshots
+            date_patterns = [
+                r'(\d{1,2}/\d{1,2}/\d{4})',  # 01/15/2024
+                r'(\d{4}-\d{2}-\d{2})',       # 2024-01-15
+                r'([A-Za-z]+ \d{1,2}, \d{4})', # January 15, 2024
+                r'([A-Za-z]{3} \d{1,2}, \d{4})', # Jan 15, 2024
+            ]
+            for pattern in date_patterns:
+                match = re.search(pattern, order_date)
+                if match:
+                    parsed_date = parse_date(match.group(1))
+                    if parsed_date:
+                        break
+
+        if not parsed_date:
+            return (
+                f"❌ Unable to parse order date: '{order_date}'\n\n"
+                f"Please provide the order date in one of these formats:\n"
+                f"• January 15, 2024\n"
+                f"• 2024-01-15\n"
+                f"• 01/15/2024"
+            )
+
+        # Extract brand from items text
+        brand = extract_brand_from_text(items)
+        brand_info = get_brand_warranty_periods(brand)
+
+        # Calculate warranty status
+        warranty_status = calculate_warranty_status(parsed_date, brand)
+
+        # Build response
+        response_parts = [
+            f"📦 {platform} Order Warranty Status",
+            f"📅 Purchase Date: {format_date(parsed_date)}",
+            f"🏪 Platform: {platform}",
+            ""
+        ]
+
+        # Format product info (truncate if too long)
+        items_display = items.strip()
+        if len(items_display) > 200:
+            items_display = items_display[:200] + "..."
+
+        response_parts.append(f"Product: {items_display}")
+        response_parts.append(f"Brand Detected: {brand_info['name']}")
+        response_parts.append(f"Days Since Purchase: {warranty_status['days_since_purchase']}")
+        response_parts.append("")
+        response_parts.append(f"📋 Warranty Status:")
+        response_parts.append(f"   {warranty_status['status_message']}")
+
+        # Add detailed period info
+        if warranty_status['within_refund_period']:
+            response_parts.append(f"   💰 Refund eligible: {warranty_status['refund_days_remaining']} days remaining")
+            response_parts.append(f"   🔄 Replacement eligible: {warranty_status['replacement_days_remaining']} days remaining")
+        elif warranty_status['within_replacement_period']:
+            response_parts.append(f"   🔄 Replacement eligible: {warranty_status['replacement_days_remaining']} days remaining")
+            response_parts.append(f"   ❌ Refund period expired ({abs(warranty_status['refund_days_remaining'])} days ago)")
+        else:
+            response_parts.append(f"   ❌ Both refund and replacement periods expired")
+            response_parts.append(f"   ⏰ Warranty expired {abs(warranty_status['replacement_days_remaining'])} days ago")
+
+        response_parts.append("")
+
+        # Add warranty policy for detected brand
+        response_parts.append(f"📋 {brand_info['name']} Warranty Policy:")
+        response_parts.append(f"   • Refund Period: {brand_info['refund_days']} days from purchase")
+        response_parts.append(f"   • Replacement Period: {brand_info['replacement_days']} days from purchase")
+
+        # Add note about brand detection if using default
+        if brand == "default":
+            response_parts.append("")
+            response_parts.append("💡 Note: Could not detect specific brand from product info.")
+            response_parts.append("   Default warranty periods applied. If you have the product SKU,")
+            response_parts.append("   please provide it for more accurate warranty information.")
+
+        logger.info(f"Warranty check complete - brand: {brand}, within_refund: {warranty_status['within_refund_period']}, within_replacement: {warranty_status['within_replacement_period']}")
+        return "\n".join(response_parts)
+
+    except Exception as e:
+        logger.error(f"Error checking warranty from order data: {e}")
+        return f"❌ An error occurred while checking warranty status. Please try again or provide additional order details."
+
+
+@tool
 def lookup_rma_by_order(order_number: str) -> str:
     """
     Look up RMA (Return Merchandise Authorization) records by order number.
@@ -665,6 +898,7 @@ def get_brand_warranty_info(brand: str = "all") -> str:
 # Export all tools
 __all__ = [
     "check_product_warranty_status",
+    "check_warranty_from_order_data",  # For Amazon/external orders without database records
     "lookup_rma_by_order",
     "lookup_rma_by_email",
     "get_rma_status",

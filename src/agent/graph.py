@@ -249,6 +249,7 @@ def create_warranty_returns_agent():
     """Create a warranty returns agent specialized in warranty checking and RMA tracking."""
     from src.agent.tools.warranty_returns_tools import (
         check_product_warranty_status,
+        check_warranty_from_order_data,  # For Amazon/external orders
         lookup_rma_by_order,
         lookup_rma_by_email,
         get_rma_status,
@@ -259,6 +260,7 @@ def create_warranty_returns_agent():
         model=init_chat_model("openai:gpt-4o-mini", temperature=0.3),
         tools=[
             check_product_warranty_status,
+            check_warranty_from_order_data,  # For Amazon/external orders
             lookup_rma_by_order,
             lookup_rma_by_email,
             get_rma_status,
@@ -270,8 +272,15 @@ def create_warranty_returns_agent():
             "checking and RMA (Return Merchandise Authorization) status tracking systems.\n\n"
             "**Available Tools:**\n\n"
             "**For Warranty Checking:**\n"
-            "- check_product_warranty_status(order_number) - Check if products are within warranty period. "
-            "This tool automatically retrieves order details and calculates warranty eligibility based on brand-specific policies.\n\n"
+            "- check_product_warranty_status(order_number) - Check warranty for orders IN OUR DATABASE. "
+            "This tool retrieves order details and calculates warranty eligibility based on brand-specific policies.\n"
+            "- check_warranty_from_order_data(order_date, items, platform) - Check warranty for EXTERNAL orders "
+            "(Amazon, eBay, etc.) that are NOT in our database. Use this when order data has been extracted from "
+            "a screenshot. Pass the order date and product info exactly as extracted.\n\n"
+            "**IMPORTANT: Choosing the Right Tool:**\n"
+            "- If customer has an order number from chromebattery.com → use check_product_warranty_status\n"
+            "- If customer has an Amazon/external order (data from screenshot) → use check_warranty_from_order_data\n"
+            "- The conversation will indicate if order data was extracted from a screenshot\n\n"
             "**For RMA Tracking:**\n"
             "- lookup_rma_by_order(order_number) - Find RMA records by order number\n"
             "- lookup_rma_by_email(email) - Find RMA records by customer email\n"
@@ -388,6 +397,9 @@ def create_agent_supervisor():
             "  • Return shipping and tracking information\n"
             "  • Warranty policy information by brand\n"
             "  • General warranty inquiries and policy questions\n"
+            "  • **AMAZON/EXTERNAL ORDER WARRANTY**: When order data was extracted from a screenshot,\n"
+            "    warranty_returns_agent can calculate warranty status using the extracted order date and product info.\n"
+            "    It does NOT need a database lookup - it works directly with the extracted data.\n"
             "  USE this agent for ALL warranty and returns questions - it provides comprehensive coverage.\n\n"
             "- **products_agent**: For product-specific inquiries including product search, specifications, "
             "comparisons, stock availability, and product recommendations. Use this agent for questions "
@@ -415,6 +427,9 @@ def create_agent_supervisor():
             "   It will ask for order info, try DB lookup, ask marketplace, then request screenshot (Amazon only).\n"
             "3. For ALL warranty & returns inquiries → warranty_returns_agent\n"
             "   (Use cases: 'Check my warranty', 'Return status', 'RMA tracking', 'Can I get a refund?', 'Replacement eligibility', 'Warranty policy')\n"
+            "   **AMAZON WARRANTY FLOW**: If order data was extracted from screenshot AND customer asks about warranty/replacement:\n"
+            "   → Route to warranty_returns_agent with the extracted order date and product info from the conversation.\n"
+            "   The agent will use check_warranty_from_order_data tool - no database lookup needed.\n"
             "4. For vehicle-battery fitment queries → fitments_agent THEN products_agent (MANDATORY)\n"
             "   (Use cases: 'What battery fits my 2020 Honda?', 'Battery for Yamaha R6', 'Which vehicles use YTZ7S?')\n"
             "   ⚠️ MANDATORY: After fitments returns SKU → ALWAYS route to products_agent for verified URL, price, stock\n"
