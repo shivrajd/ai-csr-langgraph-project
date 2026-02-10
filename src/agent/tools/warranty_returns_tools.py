@@ -201,11 +201,11 @@ def extract_brand_from_text(text: str) -> str:
     name might not contain a clear SKU prefix.
 
     Examples:
-        "Chrome Battery ZB-12R-35" -> "ZB" (SKU prefix match)
+        "Zipp Battery ZB-12R-35" -> "ZB" (SKU prefix match)
         "BT-ABS-100 Motorcycle Battery" -> "BT" (SKU prefix match)
         "Bluetooth Enabled Powersport Battery" -> "BT" (keyword match)
-        "Professional Series Deep Cycle Battery" -> "PRO" (keyword match)
-        "High Performance AGM Battery" -> "PB" (keyword match)
+        "PRO Series Deep Cycle Battery" -> "PRO" (keyword match)
+        "Pirate Battery High Performance AGM Battery" -> "PB" (keyword match)
         "Chrome Battery Motorcycle Battery 12V" -> "default" (no match)
 
     Args:
