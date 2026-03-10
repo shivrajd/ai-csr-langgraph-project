@@ -298,10 +298,14 @@ class QdrantFitmentsRetriever:
             )
 
             # Build ILIKE conditions for each term
-            # Using 'or' filters to find any match
+            # Numeric tokens (e.g. "570", "1000") represent engine displacement (cc)
+            # and must be searched against the 'cc' column, not 'model'
             for term in search_list:
                 if len(term) >= 2:  # Skip very short terms
-                    query = query.ilike('model', f'%{term}%')
+                    if term.isdigit():
+                        query = query.ilike('cc', f'%{term}%')
+                    else:
+                        query = query.ilike('model', f'%{term}%')
 
             # Add make filter if specified
             if query_make:
