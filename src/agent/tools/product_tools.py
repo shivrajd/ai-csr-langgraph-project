@@ -8,6 +8,7 @@ product catalog system in future phases.
 
 import logging
 import os
+import re
 import requests
 from typing import Dict, Any, List
 from langchain_core.tools import tool
@@ -17,6 +18,34 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# Known manufacturer prefixes used in Chrome Battery's Shopify catalog
+_BATTERY_PREFIXES = ['YTX', 'YTZ', 'GTX', 'BTX', 'CTX']
+# Regex for bare JIS powersport battery codes, e.g. 5L-BS, 14L-A2, 7Z-S
+_JIS_CODE_RE = re.compile(r'\b(\d+[LZ]-\w+)\b', re.IGNORECASE)
+# Regex to check if a code already has a known prefix
+_HAS_PREFIX_RE = re.compile(r'^(YTX|YTZ|GTX|BTX|CTX)\d', re.IGNORECASE)
+
+
+def _expand_battery_query(query: str) -> list:
+    """
+    Detect bare JIS battery codes in the query and expand with common prefixes.
+
+    Shopify catalogs title products as 'YTX5L-BS ...' while customers search '5L-BS'.
+    This function detects that pattern and adds 'YTX5L-BS' as an additional search term
+    so both the original and prefixed results are returned.
+
+    E.g.: '5L-BS battery' → ['5L-BS battery', 'YTX5L-BS']
+          'YTX5L-BS'      → ['YTX5L-BS']  (already has prefix, no expansion)
+    """
+    queries = [query]
+    match = _JIS_CODE_RE.search(query)
+    if match:
+        code = match.group(1)
+        if not _HAS_PREFIX_RE.match(query.strip()):
+            queries.append(f'YTX{code}')
+    return queries
+
 
 # Static test product data with comprehensive details
 TEST_PRODUCTS = {
@@ -180,38 +209,59 @@ def search_products(query: str) -> str:
         }
         """
 
-        # Make GraphQL request to Shopify
-        response = requests.post(
-            f"https://{store_domain}/admin/api/{api_version}/graphql.json",
-            json={"query": graphql_query, "variables": {"query": query}},
-            headers={
-                "X-Shopify-Access-Token": access_token,
-                "Content-Type": "application/json"
-            },
-            timeout=30
-        )
+        # Expand query to catch JIS battery codes with manufacturer prefixes
+        # e.g. '5L-BS' also searches 'YTX5L-BS' since Shopify catalogs use the prefixed form
+        queries_to_try = _expand_battery_query(query)
+        logger.info(f"Expanded search queries: {queries_to_try}")
 
-        if response.status_code != 200:
-            logger.error(f"Shopify API error: {response.status_code} - {response.text}")
-            return f"Unable to search products right now. API returned status {response.status_code}."
+        # Run all queries, deduplicating by product handle
+        all_products = {}  # handle → edge
+        last_error = None
+        for search_query in queries_to_try:
+            response = requests.post(
+                f"https://{store_domain}/admin/api/{api_version}/graphql.json",
+                json={"query": graphql_query, "variables": {"query": search_query}},
+                headers={
+                    "X-Shopify-Access-Token": access_token,
+                    "Content-Type": "application/json"
+                },
+                timeout=30
+            )
 
-        data = response.json()
+            if response.status_code != 200:
+                logger.error(f"Shopify API error for '{search_query}': {response.status_code}")
+                last_error = response.status_code
+                continue
 
-        # Check for GraphQL errors
-        if 'errors' in data:
-            logger.error(f"GraphQL errors: {data['errors']}")
-            return "There was an issue with the product search query. Please try again."
+            data = response.json()
+            if 'errors' in data:
+                logger.error(f"GraphQL errors for '{search_query}': {data['errors']}")
+                continue
 
-        products = data.get('data', {}).get('products', {}).get('edges', [])
+            for edge in data.get('data', {}).get('products', {}).get('edges', []):
+                handle = edge['node'].get('handle', '')
+                if handle and handle not in all_products:
+                    all_products[handle] = edge
 
-        if not products:
+        if not all_products:
+            if last_error:
+                return f"Unable to search products right now. API returned status {last_error}."
             return f"No products found matching '{query}'. Try searching for different keywords or product categories."
+
+        # Sort: active/in-stock products first, then by inventory descending
+        sorted_edges = sorted(
+            all_products.values(),
+            key=lambda e: (
+                0 if e['node'].get('status') == 'ACTIVE' else 1,
+                -(e['node'].get('totalInventory') or 0)
+            )
+        )
 
         # Format results
         results = []
-        results.append(f"Found {len(products)} product(s) matching '{query}':\n")
+        results.append(f"Found {len(sorted_edges)} product(s) matching '{query}':\n")
 
-        for edge in products:
+        for edge in sorted_edges:
             product = edge['node']
 
             # Extract basic info
